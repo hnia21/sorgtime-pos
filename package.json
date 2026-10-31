@@ -1,0 +1,24 @@
+{
+  "name": "kasir",
+  "version": "1.0.0",
+  "description": "Prototipe fungsional aplikasi kasir dan operasional Sorgtime Diet Coffee. Aplikasi menggunakan data produk, aset, palet, dan identitas visual dari proyek Sorgtime serta mencakup POS, KDS barista, inventori berbasis resep, pelanggan/loyalty, laporan, transaksi tunai dan QRIS statis, serta simulasi offline.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/azkhofi/kasir.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/azkhofi/kasir/issues"
+  },
+  "homepage": "https://azkhofi.github.io/kasir",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.118.0"
+  }
+}
