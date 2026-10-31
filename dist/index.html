@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#25170f">
+  <meta name="description" content="Sorgtime POS — kasir dan operasional diet coffee.">
+  <title>Sorgtime POS</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="auth-locked">
+  <div class="auth-gate" id="auth-gate" aria-live="polite">
+    <section class="auth-shell">
+      <div class="auth-brand-panel">
+        <img src="assets/sorgtime-logo.png" alt="Sorgtime">
+        <div>
+          <span class="auth-kicker">SORGTIME · POINT OF SALE</span>
+          <h1>Kerja rapi,<br>seduh pasti.</h1>
+          <p>Sistem operasional outlet untuk kasir, inventori, laporan, dan antrean barista.</p>
+        </div>
+        <small>YOUR GO TO GLUTEN FREE COLD BREW COFFEE</small>
+      </div>
+      <div class="auth-form-panel" id="auth-content"></div>
+    </section>
+  </div>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navigasi utama">
+      <button class="brand" data-view="pos" aria-label="Sorgtime POS">
+        <span class="brand-mark" aria-hidden="true">
+          <img src="assets/sorgtime-logo.png" alt="">
+        </span>
+        <span><strong>SORGTIME</strong><small>POINT OF SALE</small></span>
+      </button>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="pos"><span class="nav-icon">⌂</span><span>Kasir</span></button>
+        <button class="nav-item" data-view="kds"><span class="nav-icon">▣</span><span>Barista</span><em id="kds-count">3</em></button>
+        <button class="nav-item" data-view="inventory"><span class="nav-icon">◇</span><span>Inventori</span></button>
+        <button class="nav-item" data-view="customers"><span class="nav-icon">♙</span><span>Pelanggan</span></button>
+        <button class="nav-item" data-view="transactions"><span class="nav-icon">▤</span><span>Riwayat</span></button>
+        <button class="nav-item" data-view="reports"><span class="nav-icon">↗</span><span>Laporan</span></button>
+        <button class="nav-item" data-view="accounts" id="nav-accounts"><span class="nav-icon">⚙</span><span>Akun</span></button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="sync-card" id="sync-card">
+          <span class="status-dot"></span>
+          <div><strong id="sync-label">Tersinkron</strong><small id="sync-time">Baru saja</small></div>
+          <button id="toggle-network" title="Simulasikan koneksi">•••</button>
+        </div>
+        <button class="profile-card" id="profile-button">
+          <span class="avatar">KA</span>
+          <span><strong id="profile-name">—</strong><small id="profile-role">Belum masuk</small></span>
+          <span>⌄</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main-area">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" aria-label="Buka menu">☰</button>
+        <div>
+          <p class="eyebrow" id="page-eyebrow">Kamis, 15 Oktober</p>
+          <h1 id="page-title">Kasir</h1>
+        </div>
+        <div class="topbar-actions">
+          <div class="store-state"><span></span><div><small>OUTLET</small><strong>Sorgtime Probolinggo</strong></div></div>
+          <button class="icon-button" id="notification-button" aria-label="Notifikasi">♢<i>2</i></button>
+          <button class="shift-pill closed" id="shift-button"><span>Shift tutup</span><strong>Mulai</strong></button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-pos" aria-labelledby="page-title">
+        <div class="shift-closed-banner" id="shift-closed-banner" hidden>
+          <span><strong>Shift belum dibuka</strong><small>Buka shift untuk mengaktifkan katalog dan menerima pembayaran.</small></span>
+          <button id="start-shift-inline">Mulai shift</button>
+        </div>
+        <div class="pos-layout">
+          <div class="catalog-panel">
+            <div class="search-row">
+              <label class="search-box"><span>⌕</span><input id="product-search" type="search" placeholder="Cari menu atau kode produk..." autocomplete="off"></label>
+              <button class="scan-button" title="Pindai kode">⌗</button>
+            </div>
+            <div class="category-tabs" id="category-tabs"></div>
+            <div class="catalog-meta"><div><span class="hand-label">100% GULA SORGUM LOKAL</span><h2>Menu Sorgtime</h2><p id="catalog-count">12 produk tersedia</p></div><div class="catalog-actions"><button id="manage-prices">✎ Kelola menu</button><button id="sort-button">Terlaris ↓</button></div></div>
+            <div class="product-grid" id="product-grid"></div>
+          </div>
+
+          <aside class="cart-panel">
+            <div class="cart-head">
+              <div><span class="order-label">PESANAN BARU</span><h2 id="current-order-number">#A-001</h2></div>
+              <button class="more-button" id="cart-more">•••</button>
+            </div>
+            <button class="customer-trigger" id="customer-trigger">
+              <span class="customer-icon">＋</span>
+              <span><strong id="selected-customer-name">Tambahkan pelanggan</strong><small id="selected-customer-meta">Dapatkan poin dari transaksi ini</small></span>
+              <span>›</span>
+            </button>
+            <div class="cart-items" id="cart-items"></div>
+            <div class="cart-summary">
+              <button class="promo-row" id="promo-button"><span>◇ Promo & voucher</span><strong id="promo-label">Pilih ›</strong></button>
+              <div class="summary-line"><span>Subtotal</span><strong id="subtotal">Rp0</strong></div>
+              <div class="summary-line discount-line" id="discount-row" hidden><span>Hemat</span><strong id="discount">−Rp0</strong></div>
+              <div class="total-line"><span>Total</span><strong id="total">Rp0</strong></div>
+              <button class="pay-button" id="pay-button" disabled><span>Bayar sekarang</span><strong id="pay-total">Rp0</strong></button>
+              <div class="shortcut-hint"><kbd>F2</kbd> Bayar <span>·</span> <kbd>F4</kbd> Pelanggan <span>·</span> <kbd>Esc</kbd> Batal</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-kds">
+        <div class="section-toolbar">
+          <div><span class="hand-label">SORGTIME BAR</span><h2>Antrean produksi</h2><p>Pesanan diperbarui langsung dari kasir</p></div>
+          <div class="toolbar-group"><button class="secondary-button" id="kds-sound">♩ Suara aktif</button><button class="primary-small" data-view="pos">＋ Pesanan baru</button></div>
+        </div>
+        <div class="kds-stats" id="kds-stats"></div>
+        <div class="kanban" id="kanban"></div>
+      </section>
+
+      <section class="view" id="view-inventory">
+        <div class="section-toolbar">
+          <div><span class="hand-label">BAHAN LOKAL</span><h2>Inventori bahan</h2><p>Stok berkurang otomatis berdasarkan resep</p></div>
+          <div class="toolbar-group"><button class="secondary-button" id="hpp-manage">Resep & HPP</button><button class="secondary-button" id="stock-opname">＋ Tambah item</button><button class="primary-small" id="stock-add">± Penyesuaian stok</button></div>
+        </div>
+        <div class="metric-grid" id="inventory-metrics"></div>
+        <div class="content-card">
+          <div class="card-header"><div><h3>Persediaan saat ini</h3><p>Diperbarui dari transaksi dan pergerakan stok</p></div><label class="small-search">⌕ <input id="inventory-search" placeholder="Cari bahan..."></label></div>
+          <div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Kategori</th><th>Stok tersedia</th><th>Harga acuan HPP</th><th>Minimum</th><th>Status</th><th></th></tr></thead><tbody id="inventory-table"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-customers">
+        <div class="section-toolbar">
+          <div><span class="hand-label">SORGTIME PEOPLE</span><h2>Pelanggan & loyalty</h2><p>Bangun hubungan, bukan hanya transaksi</p></div>
+          <button class="primary-small" id="customer-add">＋ Tambah pelanggan</button>
+        </div>
+        <div class="metric-grid" id="customer-metrics"></div>
+        <div class="content-card">
+          <div class="card-header"><div><h3>Member terbaru</h3><p>Riwayat poin dan kunjungan pelanggan</p></div><label class="small-search">⌕ <input id="customer-search-page" placeholder="Cari nama atau nomor..."></label></div>
+          <div class="table-wrap"><table><thead><tr><th>Pelanggan</th><th>Kontak</th><th>Kunjungan</th><th>Total belanja</th><th>Poin</th><th>Status</th></tr></thead><tbody id="customer-table"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-transactions">
+        <div class="section-toolbar">
+          <div><span class="hand-label">CATATAN PENJUALAN</span><h2>Riwayat transaksi</h2><p>Lacak pesanan, kasir, pembayaran, dan cetak ulang nota</p></div>
+          <button class="secondary-button" id="export-transactions">⇩ Ekspor hasil filter</button>
+        </div>
+        <div class="metric-grid" id="transaction-metrics"></div>
+        <div class="history-filter-card">
+          <label class="history-search">⌕ <input id="transaction-search" type="search" placeholder="Cari nomor order atau pelanggan..."></label>
+          <label><span>Dari tanggal</span><input id="transaction-date-from" type="date"></label>
+          <label><span>Sampai tanggal</span><input id="transaction-date-to" type="date"></label>
+          <label><span>Kasir</span><select id="transaction-cashier"><option value="">Semua kasir</option></select></label>
+          <label><span>Pembayaran</span><select id="transaction-payment"><option value="">Semua metode</option><option value="Tunai">Tunai</option><option value="QRIS">QRIS</option></select></label>
+          <label><span>Status</span><select id="transaction-status"><option value="">Semua status</option><option value="new">Baru</option><option value="making">Dibuat</option><option value="ready">Siap</option><option value="done">Selesai</option></select></label>
+          <button id="reset-transaction-filter">Reset</button>
+        </div>
+        <div class="content-card">
+          <div class="card-header"><div><h3>Daftar transaksi</h3><p id="transaction-result-label">0 transaksi ditemukan</p></div><strong class="history-total" id="transaction-filter-total">Rp0</strong></div>
+          <div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Order</th><th>Kasir</th><th>Pelanggan</th><th>Jumlah</th><th>Pembayaran</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody id="transaction-table"></tbody></table></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-reports">
+        <div class="section-toolbar">
+          <div><span class="hand-label">KONTROL OPERASIONAL</span><h2>Laporan usaha</h2><p id="report-period-label">Performa outlet sampai pukul <span id="report-time">14.32</span></p></div>
+          <div class="toolbar-group"><button class="secondary-button" id="attendance-manage">◷ Kehadiran</button><button class="secondary-button" id="payroll-payment">✓ Bayar gaji</button><button class="secondary-button" id="payroll-settings">⚙ Atur gaji</button><button class="secondary-button" id="report-add-expense">＋ Catat belanja</button><button class="primary-small" id="export-report">⇩ Ekspor CSV</button></div>
+        </div>
+        <div class="report-filter-card">
+          <div class="report-presets"><button data-report-preset="today" class="active">Hari ini</button><button data-report-preset="yesterday">Kemarin</button><button data-report-preset="7days">7 hari</button><button data-report-preset="month">Bulan ini</button></div>
+          <label><span>Dari tanggal</span><input id="report-date-from" type="date"></label>
+          <label><span>Sampai tanggal</span><input id="report-date-to" type="date"></label>
+          <label><span>Karyawan</span><select id="report-cashier"><option value="">Semua karyawan</option></select></label>
+          <label><span>Pembayaran</span><select id="report-payment"><option value="">Semua metode</option><option value="Tunai">Tunai</option><option value="QRIS">QRIS</option></select></label>
+          <button id="reset-report-filter">Reset</button>
+        </div>
+        <div class="metric-grid report-metrics" id="report-metrics"></div>
+        <div class="report-method-note" id="report-method-note"></div>
+        <div class="report-grid">
+          <div class="content-card chart-card"><div class="card-header"><div><h3 id="sales-chart-title">Penjualan harian</h3><p id="sales-chart-subtitle">Tren omzet pada periode terpilih</p></div><span class="legend"><i></i> Omzet</span></div><div class="bar-chart" id="bar-chart"></div></div>
+          <div class="content-card"><div class="card-header"><div><h3>Menu terlaris</h3><p>Berdasarkan jumlah terjual</p></div><button class="text-button">Lihat semua</button></div><div class="ranking-list" id="ranking-list"></div></div>
+        </div>
+        <div class="report-grid finance-row">
+          <div class="content-card"><div class="card-header"><div><h3>Ringkasan laba & arus kas</h3><p>HPP sudah mencakup bonus pekerja dari resep</p></div></div><div class="finance-summary" id="report-finance"></div></div>
+          <div class="content-card"><div class="card-header"><div><h3>Gaji & bonus karyawan</h3><p>Hak, pembayaran, dan sisa kewajiban per karyawan</p></div><strong class="history-total" id="payroll-total">Rp0</strong></div><div class="table-wrap compact-report-table"><table class="payroll-report-table"><thead><tr><th>Karyawan</th><th>Hari</th><th>Cup</th><th>Gaji pokok</th><th>Bonus*</th><th>Total hak</th><th>Sudah dibayar</th><th>Sisa</th><th>Status</th></tr></thead><tbody id="payroll-table"></tbody></table></div><p class="table-footnote">* Bonus dihitung dari seluruh cup kasir pada periode, sehingga tidak berubah ketika laporan penjualan difilter berdasarkan Tunai atau QRIS.</p></div>
+        </div>
+        <div class="content-card daily-report-card">
+          <div class="card-header"><div><h3>Perbandingan transaksi harian</h3><p>Omzet, biaya, dan hasil bersih per tanggal</p></div><span class="comparison-note">Dibanding hari sebelumnya</span></div>
+          <div class="table-wrap"><table class="daily-report-table"><thead><tr><th>Tanggal</th><th>Transaksi</th><th>Cup</th><th>Omzet</th><th>Vs hari lalu</th><th>HPP incl. bonus</th><th>Gaji pokok</th><th>Bonus hak</th><th>Belanja stok</th><th>Gaji dibayar</th><th>Laba operasional</th><th>Arus kas aktual</th></tr></thead><tbody id="daily-report-table"></tbody></table></div>
+        </div>
+        <div class="content-card purchase-report-card">
+          <div class="card-header"><div><h3>Beban belanja stok</h3><p>Nominal aktual dari pencatatan stok masuk</p></div><strong class="history-total" id="purchase-total">Rp0</strong></div>
+          <div class="table-wrap compact-report-table"><table><thead><tr><th>Waktu</th><th>Item</th><th>Jumlah masuk</th><th>Referensi</th><th>Dicatat oleh</th><th>Nominal</th><th></th></tr></thead><tbody id="purchase-report-table"></tbody></table></div>
+        </div>
+        <div class="report-grid lower">
+          <div class="content-card"><div class="card-header"><div><h3>Metode pembayaran</h3><p>Distribusi nilai transaksi</p></div></div><div class="payment-breakdown" id="payment-breakdown"></div></div>
+          <div class="content-card"><div class="card-header"><div><h3>Kesehatan operasional</h3><p>Indikator shift berjalan</p></div></div><div class="health-list" id="health-list"></div></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-accounts">
+        <div class="section-toolbar">
+          <div><span class="hand-label">AKSES OUTLET</span><h2>Pengguna & peran</h2><p>Kelola siapa yang dapat masuk dan modul yang boleh digunakan</p></div>
+          <button class="primary-small" id="account-add">＋ Buat akun</button>
+        </div>
+        <div class="role-overview" id="role-overview"></div>
+        <div class="content-card">
+          <div class="card-header"><div><h3>Daftar pengguna</h3><p>Password disimpan sebagai hash pada perangkat ini</p></div><label class="small-search">⌕ <input id="account-search" placeholder="Cari nama atau username..."></label></div>
+          <div class="table-wrap"><table><thead><tr><th>Pengguna</th><th>Username</th><th>Peran</th><th>Status</th><th>Dibuat</th><th></th></tr></thead><tbody id="account-table"></tbody></table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal-backdrop" hidden>
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"></div>
+  </div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

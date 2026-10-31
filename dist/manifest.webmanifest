@@ -1,0 +1,19 @@
+{
+  "name": "Sorgtime POS",
+  "short_name": "Sorgtime POS",
+  "description": "Kasir dan operasional Sorgtime Diet Coffee",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#fcf5e6",
+  "theme_color": "#006512",
+  "orientation": "landscape",
+  "lang": "id-ID",
+  "icons": [
+    {
+      "src": "assets/sorgtime-logo.png",
+      "sizes": "311x400",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
