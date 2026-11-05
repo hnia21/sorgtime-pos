@@ -138,9 +138,15 @@ state.orders.forEach((order, index) => {
   order.statusHistory ||= [{ status: 'new', at: order.created, user: order.cashier || 'Sistem' }];
 });
 
+let applyingRemote = false;
+let syncingRemote = false;
+let pendingRemote = null;
+let remoteToastShown = false;
+let lastRemoteAt = cloudResult.updatedAt ? Date.parse(cloudResult.updatedAt) : 0;
+
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); cloud.save(state, authUsers); };
+const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); if (!applyingRemote) cloud.save(state, authUsers); };
 const nextOrderId = () => `A-${String(state.orderNo).padStart(3, '0')}`;
 const escapeHTML = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 const orderRef = order => order.uid || order.id;
@@ -254,7 +260,7 @@ function openModal(html, wide = false) {
   $('#modal-backdrop').hidden = false;
   setTimeout(() => $('.modal-close')?.focus(), 20);
 }
-function closeModal() { $('#modal-backdrop').hidden = true; $('#modal').innerHTML = ''; }
+function closeModal() { $('#modal-backdrop').hidden = true; $('#modal').innerHTML = ''; if (pendingRemote && !state.cart.length) maybeApplyRemote(pendingRemote); }
 
 function productVisual(product, compact = false) {
   return `<div class="product-art ${product.type === 'retail' ? 'retail-art' : ''}"><img src="${escapeHTML(product.image)}" alt="${escapeHTML(product.name)}" loading="lazy"></div>`;
@@ -1124,11 +1130,86 @@ document.addEventListener('keydown', e=>{ if(e.key==='F2'){e.preventDefault(); i
 setInterval(()=>{ if($('#view-kds').classList.contains('active')) renderKDS(); }, 1000);
 setInterval(renderShiftState, 1000);
 
+function hasBlockingOverlay() {
+  const backdrop = document.getElementById('modal-backdrop');
+  return Boolean(state.cart.length) || Boolean(backdrop && !backdrop.hidden);
+}
+
+function applyRemoteResult(result) {
+  const productRef = products;
+  const addOnRef = addOns;
+  const incoming = result.state || {};
+  Object.keys(state).forEach(key => { delete state[key]; });
+  Object.assign(state, incoming);
+  if (Array.isArray(incoming.products)) { productRef.length = 0; productRef.push(...incoming.products); state.products = productRef; }
+  if (Array.isArray(incoming.addOns)) { addOnRef.length = 0; addOnRef.push(...incoming.addOns); state.addOns = addOnRef; }
+  state.inventory ||= ingredients;
+  state.orders ||= [];
+  state.cart ||= [];
+  state.networkOnline ??= true;
+  if (Array.isArray(result.users) && result.users.length) authUsers = result.users;
+  localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state));
+  localStorage.setItem(USERS_KEY, JSON.stringify(authUsers));
+  if (currentUser) {
+    const refreshed = authUsers.find(user => user.id === currentUser.id && user.status === 'active');
+    if (!refreshed) { lastRemoteAt = Date.now(); logout(); return; }
+    currentUser = refreshed;
+  }
+  applyingRemote = true;
+  try {
+    if (currentUser) { renderAll(); applyPermissions(); }
+  } finally {
+    applyingRemote = false;
+  }
+  cloud.markSynced(state, authUsers);
+  pendingRemote = null;
+  remoteToastShown = false;
+  lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : Date.now();
+  toast('Data diperbarui dari perangkat lain', '↻');
+}
+
+function maybeApplyRemote(result) {
+  if (!cloud.enabled || !result || !result.ok || !result.state) return;
+  const ts = result.updatedAt ? Date.parse(result.updatedAt) : 0;
+  if (!ts || ts <= lastRemoteAt) return;
+  if (hasBlockingOverlay()) {
+    pendingRemote = result;
+    if (!remoteToastShown) {
+      remoteToastShown = true;
+      toast('Data baru dari perangkat lain. Selesaikan form atau kosongkan keranjang untuk memuat.', '↻');
+    }
+    return;
+  }
+  applyRemoteResult(result);
+}
+
+async function pullRemote() {
+  if (!cloud.enabled || syncingRemote || cloud.hasPending()) return;
+  if (pendingRemote && !hasBlockingOverlay()) maybeApplyRemote(pendingRemote);
+  syncingRemote = true;
+  try {
+    maybeApplyRemote(await cloud.load());
+  } finally {
+    syncingRemote = false;
+  }
+}
+
+function startCloudSync() {
+  window.addEventListener('pos:cloud-saved', () => { lastRemoteAt = Math.max(lastRemoteAt, Date.now() + 1500); });
+  window.addEventListener('pos:cloud-error', () => { if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
+  window.addEventListener('focus', pullRemote);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullRemote(); });
+  setInterval(pullRemote, 20000);
+  cloud.subscribe(row => maybeApplyRemote({ ok: true, state: row.state, users: row.users, updatedAt: row.updated_at }));
+}
+
 renderAll();
 initializeAuth();
 
-if (cloudResult.enabled && cloudResult.ok && (!remoteState || !remoteUsers)) {
-  cloud.save(state, authUsers);
+if (cloud.enabled) {
+  if (cloudResult.ok && remoteState) cloud.markSynced(state, authUsers);
+  if (cloudResult.ok && (!remoteState || !remoteUsers)) cloud.save(state, authUsers);
+  startCloudSync();
 }
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

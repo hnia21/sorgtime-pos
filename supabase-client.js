@@ -15,6 +15,8 @@ export const isConfigured = !looksLikePlaceholder(SUPABASE_URL) && !looksLikePla
 let client = null;
 let pending = null;
 let timer = null;
+let saving = false;
+let lastPayload = '';
 
 function getClient() {
   if (!isConfigured) return null;
@@ -29,11 +31,11 @@ function getClient() {
   return client;
 }
 
-// Mengembalikan { ok, state, users }.
+// Mengembalikan { ok, state, users, updatedAt }.
 // ok=false berarti gagal terhubung; state/users null berarti baris belum ada.
 export async function load() {
   const db = getClient();
-  if (!db) return { ok: false, enabled: false, state: null, users: null };
+  if (!db) return { ok: false, enabled: false, state: null, users: null, updatedAt: null };
   try {
     const query = db
       .from(TABLE)
@@ -52,7 +54,7 @@ export async function load() {
     };
   } catch (error) {
     console.error('Gagal memuat data Supabase:', error);
-    return { ok: false, enabled: true, state: null, users: null };
+    return { ok: false, enabled: true, state: null, users: null, updatedAt: null };
   }
 }
 
@@ -63,11 +65,22 @@ export function save(state, users) {
   timer = setTimeout(flush, 300);
 }
 
+export function hasPending() {
+  return Boolean(pending) || Boolean(timer) || saving;
+}
+
+export function markSynced(state, users) {
+  lastPayload = JSON.stringify({ state, users });
+}
+
 export async function flush() {
   const db = getClient();
   if (!db || !pending) return;
   const payload = pending;
   pending = null;
+  const serialized = JSON.stringify({ state: payload.state, users: payload.users });
+  if (serialized === lastPayload) return;
+  saving = true;
   try {
     const { error } = await db.from(TABLE).upsert(
       {
@@ -79,11 +92,40 @@ export async function flush() {
       { onConflict: 'id' }
     );
     if (error) throw error;
+    lastPayload = serialized;
     window.dispatchEvent(new CustomEvent('pos:cloud-saved', { detail: { at: Date.now() } }));
   } catch (error) {
     console.error('Gagal menyimpan data Supabase:', error);
     window.dispatchEvent(new CustomEvent('pos:cloud-error', { detail: { error } }));
+  } finally {
+    saving = false;
   }
 }
 
-export const cloud = { enabled: isConfigured, load, save, flush };
+// Berlangganan perubahan baris pos_state. Butuh tabel terdaftar di
+// publication `supabase_realtime`; jika belum, polling di app.js tetap jalan.
+export function subscribe(onChange) {
+  const db = getClient();
+  if (!db) return () => {};
+  try {
+    const channel = db
+      .channel('pos_state_live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: TABLE, filter: `id=eq.${ROW_ID}` },
+        payload => {
+          const row = payload.new && Object.keys(payload.new).length ? payload.new : payload.old;
+          if (row && typeof onChange === 'function') onChange(row);
+        }
+      )
+      .subscribe();
+    return () => {
+      try { db.removeChannel(channel); } catch (error) { /* abaikan */ }
+    };
+  } catch (error) {
+    console.warn('Realtime Supabase tidak tersedia:', error);
+    return () => {};
+  }
+}
+
+export const cloud = { enabled: isConfigured, load, save, flush, hasPending, markSynced, subscribe };
