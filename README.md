@@ -31,13 +31,13 @@ Buka `http://localhost:4173`. Data demo disimpan di `localStorage` browser.
 ## Menghubungkan Supabase
 
 1. Buat project di [supabase.com](https://supabase.com).
-2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010007_create_pos_state_table.sql`) atau dengan Supabase CLI:
+2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010008_enable_pos_state_realtime.sql`) atau dengan Supabase CLI:
    ```bash
    supabase link --project-ref <PROJECT_REF>
    supabase db push
    ```
 3. Buka `dist/supabase-client.js`, isi `SUPABASE_URL` dan `SUPABASE_ANON_KEY` dari **Project Settings → API**.
-4. Deploy folder `dist`. Aplikasi akan memuat state terbaru dari tabel `pos_state` saat dibuka dan menyimpannya kembali setiap ada perubahan. `localStorage` tetap dipakai sebagai cache/fallback saat offline.
+4. Deploy folder `dist`. Aplikasi memuat state terbaru dari tabel `pos_state` saat dibuka, menyimpannya kembali setiap ada perubahan, lalu menyinkronkan antar perangkat lewat realtime `postgres_changes` (jika migrasi `008` dijalankan) dan polling 20 detik sebagai fallback. `localStorage` tetap dipakai sebagai cache/fallback saat offline. Perubahan remote ditunda saat modal terbuka atau keranjang berisi agar input kasir tidak tertimpa.
 
 > Catatan keamanan: arsitektur ini memakai anon key publik dan kebijakan RLS permisif pada `pos_state` agar prototipe dapat berjalan tanpa Supabase Auth. Untuk produksi, pindahkan autentikasi ke Supabase Auth dan batasi RLS per pengguna.
 
@@ -47,4 +47,4 @@ Workflow `.github/workflows/github-pages-deploy.yml` akan mempublikasikan folder
 
 ## Catatan
 
-Versi ini adalah implementasi frontend dengan penyimpanan lokal dan sinkronisasi snapshot ke Supabase. Printer native, gateway pembayaran, autentikasi PIN, dan sinkronisasi real-time multi-perangkat masih memerlukan layanan produksi terpisah.
+Versi ini adalah implementasi frontend dengan penyimpanan lokal dan sinkronisasi snapshot ke Supabase. Printer native, gateway pembayaran, dan Supabase Auth + RLS per pengguna masih memerlukan layanan produksi terpisah. Sinkronisasi multi-perangkat memakai model snapshot last-write-wins; konflik bersamaan dapat menimpa perubahan terakhir.
