@@ -80,9 +80,22 @@ if (cloud.enabled) {
   const gate = document.getElementById('auth-content');
   if (gate && !gate.innerHTML.trim()) gate.innerHTML = '<div class="auth-form-wrap"><span class="auth-step">MENYAMBUNGKAN</span><h2>Memuat data outlet</h2><p>Mengambil data terbaru dari Supabase...</p></div>';
 }
-const cloudResult = cloud.enabled ? await cloud.load() : { ok: false, enabled: false, state: null, users: null };
+const authFlag = localStorage.getItem('sorgtimeAuthBackendV1') === '1';
+const canProbeAuth = cloud.enabled && (navigator.onLine !== false || authFlag);
+const authProbe = canProbeAuth ? await cloud.hasAnyUser() : { ok: authFlag, exists: authFlag };
+const authBackendReady = Boolean(cloud.enabled && authProbe.ok);
+const legacyMode = !authBackendReady;
+if (authBackendReady) localStorage.setItem('sorgtimeAuthBackendV1', '1');
+let cloudHasUsers = authBackendReady ? authProbe.exists : false;
+const bootSession = authBackendReady ? await cloud.getSession() : null;
+let cloudResult = { ok: false, enabled: cloud.enabled, state: null, users: null };
+if (!authBackendReady) cloudResult = await cloud.loadLegacy();
+else if (bootSession) cloudResult = await cloud.load();
 const remoteState = cloudResult.state && Object.keys(cloudResult.state).length ? cloudResult.state : null;
 const remoteUsers = Array.isArray(cloudResult.users) && cloudResult.users.length ? cloudResult.users : null;
+const bootProfiles = (authBackendReady && bootSession) ? await cloud.loadProfiles() : { ok: false, users: [] };
+let cachedProfiles = [];
+try { const storedProfiles = JSON.parse(localStorage.getItem('sorgtimeAuthUsersV1') || '[]'); cachedProfiles = Array.isArray(storedProfiles) ? storedProfiles : []; } catch (error) { cachedProfiles = []; }
 const saved = remoteState || localSaved;
 const state = {
   cart: [], orders: [], selectedCustomer: null, promo: null,
@@ -142,12 +155,14 @@ let applyingRemote = false;
 let syncingRemote = false;
 let pendingRemote = null;
 let remoteToastShown = false;
+let syncReady = false;
+let cloudSyncStarted = false;
 let lastRemoteAt = cloudResult.updatedAt ? Date.parse(cloudResult.updatedAt) : 0;
 let lastSyncedFingerprint = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); if (!applyingRemote) cloud.save(state, authUsers); };
+const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); if (syncReady && !applyingRemote) cloud.save(state, syncUsers()); };
 const nextOrderId = () => `A-${String(state.orderNo).padStart(3, '0')}`;
 const escapeHTML = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 const orderRef = order => order.uid || order.id;
@@ -167,10 +182,22 @@ const ROLE_PERMISSIONS = {
   admin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
   barista: ['kds']
 };
-let authUsers = remoteUsers || JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
+let authUsers = authBackendReady
+  ? (bootProfiles.ok ? bootProfiles.users : cachedProfiles)
+  : (remoteUsers || cachedProfiles);
+if (authBackendReady) authUsers = authUsers.map(({ id, name, username, role, status, createdAt }) => ({ id, name, username, role, status, createdAt }));
 let currentUser = null;
 
-const saveUsers = () => { localStorage.setItem(USERS_KEY, JSON.stringify(authUsers)); cloud.save(state, authUsers); };
+const syncUsers = () => (legacyMode ? authUsers : null);
+const stateFingerprint = () => cloud.fingerprint(state, syncUsers());
+const cacheProfiles = () => {
+  const payload = legacyMode
+    ? authUsers
+    : authUsers.map(({ id, name, username, role, status, createdAt }) => ({ id, name, username, role, status, createdAt }));
+  localStorage.setItem(USERS_KEY, JSON.stringify(payload));
+};
+const saveUsers = () => { cacheProfiles(); if (syncReady) cloud.save(state, syncUsers()); };
+if (authBackendReady) { cacheProfiles(); sessionStorage.removeItem('sorgtimeAuthSessionV1'); }
 const randomSalt = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -187,13 +214,17 @@ function authRoleCards() {
 function renderAuthGate(message = '') {
   document.body.classList.add('auth-locked');
   $('#auth-gate').hidden = false;
-  if (!authUsers.length) {
-    $('#auth-content').innerHTML = `<div class="auth-form-wrap"><span class="auth-step">SETUP PERTAMA</span><h2>Buat akun pemilik</h2><p>Akun pertama otomatis menjadi sysadmin dan dapat membuat akun lain.</p>${message ? `<div class="auth-message">${escapeHTML(message)}</div>` : ''}<form class="auth-form" id="setup-form"><label>Nama lengkap<input name="name" required autocomplete="name" placeholder="Nama pemilik"></label><label>Username<input name="username" required autocomplete="username" minlength="3" placeholder="Contoh: owner"></label><label>Password<input name="password" required type="password" autocomplete="new-password" minlength="6" placeholder="Minimal 6 karakter"></label><label>Ulangi password<input name="confirm" required type="password" autocomplete="new-password" minlength="6" placeholder="Ketik sekali lagi"></label><button type="submit">Buat sysadmin →</button></form><div class="auth-security">Password disimpan sebagai hash pada perangkat ini, bukan sebagai teks biasa.</div></div>`;
-    $('#setup-form').addEventListener('submit', handleFirstSetup);
+  const hasAccounts = authBackendReady ? cloudHasUsers : authUsers.length;
+  const securityNote = authBackendReady
+    ? 'Login diamankan oleh Supabase Auth.'
+    : 'Mode lokal aktif. Jalankan migrasi 202401010009 untuk mengaktifkan login Supabase.';
+  if (!hasAccounts) {
+    $('#auth-content').innerHTML = `<div class="auth-form-wrap"><span class="auth-step">SETUP PERTAMA</span><h2>Buat akun pemilik</h2><p>Akun pertama otomatis menjadi sysadmin dan dapat membuat akun lain.</p>${message ? `<div class="auth-message">${escapeHTML(message)}</div>` : ''}<form class="auth-form" id="setup-form"><label>Nama lengkap<input name="name" required autocomplete="name" placeholder="Nama pemilik"></label><label>Username<input name="username" required autocomplete="username" minlength="3" placeholder="Contoh: owner"></label><label>Password<input name="password" required type="password" autocomplete="new-password" minlength="6" placeholder="Minimal 6 karakter"></label><label>Ulangi password<input name="confirm" required type="password" autocomplete="new-password" minlength="6" placeholder="Ketik sekali lagi"></label><button type="submit">Buat sysadmin →</button></form><div class="auth-security">${securityNote}</div></div>`;
+    $('#setup-form').addEventListener('submit', authBackendReady ? handleFirstSetupCloud : handleFirstSetup);
     return;
   }
-  $('#auth-content').innerHTML = `<div class="auth-form-wrap"><span class="auth-step">AKSES OUTLET</span><h2>Masuk ke POS</h2><p>Gunakan akun yang sudah diberikan oleh pengelola outlet.</p>${message ? `<div class="auth-message">${escapeHTML(message)}</div>` : ''}<form class="auth-form" id="login-form"><label>Username<input name="username" required autocomplete="username" autofocus placeholder="Masukkan username"></label><label>Password<input name="password" required type="password" autocomplete="current-password" placeholder="Masukkan password"></label><button type="submit">Masuk →</button></form><div class="auth-roles">${authRoleCards()}</div></div>`;
-  $('#login-form').addEventListener('submit', handleLogin);
+  $('#auth-content').innerHTML = `<div class="auth-form-wrap"><span class="auth-step">AKSES OUTLET</span><h2>Masuk ke POS</h2><p>Gunakan akun yang sudah diberikan oleh pengelola outlet.</p>${message ? `<div class="auth-message">${escapeHTML(message)}</div>` : ''}<form class="auth-form" id="login-form"><label>Username<input name="username" required autocomplete="username" autofocus placeholder="Masukkan username"></label><label>Password<input name="password" required type="password" autocomplete="current-password" placeholder="Masukkan password"></label><button type="submit">Masuk →</button></form><div class="auth-roles">${authRoleCards()}</div><div class="auth-security">${securityNote}</div></div>`;
+  $('#login-form').addEventListener('submit', authBackendReady ? handleLoginCloud : handleLogin);
 }
 
 async function handleFirstSetup(event) {
@@ -204,7 +235,9 @@ async function handleFirstSetup(event) {
   if (!/^[a-z0-9._-]{3,24}$/.test(username)) return renderAuthGate('Username hanya boleh berisi huruf kecil, angka, titik, garis bawah, atau tanda minus.');
   const salt = randomSalt(); const passwordHash = await hashPassword(password, salt);
   authUsers = [{ id: crypto.randomUUID(), name, username, role: 'sysadmin', status: 'active', salt, passwordHash, createdAt: Date.now() }];
-  saveUsers(); renderAuthGate('Akun sysadmin berhasil dibuat. Silakan masuk.');
+  saveUsers();
+  if (cloud.enabled) { cloud.save(state, authUsers); lastSyncedFingerprint = stateFingerprint(); }
+  renderAuthGate('Akun sysadmin berhasil dibuat. Silakan masuk.');
 }
 
 async function handleLogin(event) {
@@ -216,6 +249,58 @@ async function handleLogin(event) {
   const inputHash = await hashPassword(password, user.salt);
   if (inputHash !== user.passwordHash) return renderAuthGate('Username atau password tidak sesuai.');
   sessionStorage.setItem(SESSION_KEY, user.id); unlockApp(user);
+}
+
+async function handleFirstSetupCloud(event) {
+  event.preventDefault();
+  const form = event.currentTarget; const data = new FormData(form);
+  const name = data.get('name').trim(); const username = data.get('username').trim().toLowerCase(); const password = data.get('password');
+  if (password !== data.get('confirm')) return renderAuthGate('Konfirmasi password tidak sama.');
+  if (!/^[a-z0-9._-]{3,24}$/.test(username)) return renderAuthGate('Username hanya boleh berisi huruf kecil, angka, titik, garis bawah, atau tanda minus.');
+  const result = await cloud.signUp(username, password, name);
+  if (!result.ok) return renderAuthGate(result.message);
+  const boot = await cloud.bootstrapFirstAdmin(name, username);
+  if (!boot.ok) {
+    await cloud.signOut();
+    return renderAuthGate('Profil admin gagal dibuat. Jika username sudah terpakai, gunakan username lain. Jika migrasi 202401010009 belum dijalankan, jalankan lalu muat ulang aplikasi.');
+  }
+  cloudHasUsers = true;
+  const profiles = await cloud.loadProfiles();
+  authUsers = profiles.ok ? profiles.users : [boot.profile].filter(Boolean);
+  cacheProfiles();
+  const me = authUsers.find(user => user.id === result.user.id) || boot.profile;
+  if (!me) { await cloud.signOut(); return renderAuthGate('Profil admin tidak ditemukan.'); }
+  await completeCloudLogin(me);
+}
+
+async function handleLoginCloud(event) {
+  event.preventDefault();
+  const data = new FormData(event.currentTarget);
+  const username = data.get('username').trim().toLowerCase(); const password = data.get('password');
+  const result = await cloud.signIn(username, password);
+  if (!result.ok) return renderAuthGate(result.message);
+  const profiles = await cloud.loadProfiles();
+  if (profiles.authError) { await cloud.signOut(); return renderAuthGate('Sesi bermasalah. Silakan masuk lagi.'); }
+  authUsers = profiles.ok ? profiles.users : cachedProfiles;
+  const me = authUsers.find(user => user.id === result.user.id && user.status === 'active');
+  if (!me) { await cloud.signOut(); return renderAuthGate('Akun ini belum terdaftar atau sedang dinonaktifkan. Hubungi sysadmin.'); }
+  cloudHasUsers = true;
+  cacheProfiles();
+  await completeCloudLogin(me);
+}
+
+async function completeCloudLogin(profile) {
+  currentUser = profile;
+  const result = await cloud.load();
+  if (result.authError) { await cloud.signOut(); currentUser = null; return renderAuthGate('Sesi berakhir. Silakan masuk lagi.'); }
+  if (result.ok && result.state) {
+    hydrateRemoteState(result);
+    cloud.markSynced(state, syncUsers());
+    lastSyncedFingerprint = stateFingerprint();
+    lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : 0;
+  }
+  unlockApp(profile);
+  if (result.ok && !result.state) cloud.save(state, syncUsers());
 }
 
 function applyPermissions() {
@@ -233,16 +318,34 @@ function applyPermissions() {
 
 function unlockApp(user) {
   currentUser = user;
+  syncReady = true;
   document.body.classList.remove('auth-locked');
   $('#auth-gate').hidden = true;
   applyPermissions(); renderAll(); switchView(user.role === 'barista' ? 'kds' : 'pos');
+  startCloudSync();
 }
 
-function logout() {
+async function logout() {
+  syncReady = false;
+  pendingRemote = null;
+  if (authBackendReady) await cloud.signOut();
   sessionStorage.removeItem(SESSION_KEY); currentUser = null; closeModal(); renderAuthGate('Anda telah keluar dari aplikasi.');
 }
 
-function initializeAuth() {
+async function initializeAuth() {
+  if (authBackendReady) {
+    const session = await cloud.getSession();
+    if (!session) return renderAuthGate();
+    const profiles = await cloud.loadProfiles();
+    if (profiles.authError) { await cloud.signOut(); return renderAuthGate('Sesi berakhir. Silakan masuk lagi.'); }
+    authUsers = profiles.ok ? profiles.users : cachedProfiles;
+    const me = authUsers.find(user => user.id === session.user.id && user.status === 'active');
+    if (!me) { await cloud.signOut(); return renderAuthGate('Akun ini belum terdaftar atau dinonaktifkan.'); }
+    cloudHasUsers = true;
+    cacheProfiles();
+    await completeCloudLogin(me);
+    return;
+  }
   const sessionUserId = sessionStorage.getItem(SESSION_KEY);
   const user = authUsers.find(item => item.id === sessionUserId && item.status === 'active');
   if (user) unlockApp(user); else renderAuthGate();
@@ -732,6 +835,16 @@ function showAccountForm() {
     if (!roles.includes(role)) return toast('Anda tidak berhak membuat peran tersebut','!');
     if (!/^[a-z0-9._-]{3,24}$/.test(username)) return toast('Format username tidak valid','!');
     if (authUsers.some(user=>user.username===username)) return toast('Username sudah digunakan','!');
+    if (authBackendReady) {
+      const created = await cloud.createAuthUser(username, data.get('password'));
+      if (!created.ok) return toast(created.message, '!');
+      const saved = await cloud.saveProfile({ id: created.userId, name: data.get('name').trim(), username, role, status: 'active' });
+      if (!saved.ok) return toast(saved.message, '!');
+      const profiles = await cloud.loadProfiles();
+      if (profiles.ok) { authUsers = profiles.users; cacheProfiles(); }
+      closeModal(); renderAccounts(); toast(`Akun ${ROLE_LABELS[role]} berhasil dibuat`,'♙');
+      return;
+    }
     const salt=randomSalt(); const passwordHash=await hashPassword(data.get('password'),salt);
     authUsers.push({id:crypto.randomUUID(),name:data.get('name').trim(),username,role,status:'active',salt,passwordHash,createdAt:Date.now(),createdBy:currentUser.id});
     saveUsers(); closeModal(); renderAccounts(); toast(`Akun ${ROLE_LABELS[role]} berhasil dibuat`,'♙');
@@ -740,6 +853,10 @@ function showAccountForm() {
 
 function showPasswordReset(user) {
   if (!canManageUser(user)) return;
+  if (authBackendReady) {
+    openModal(`<div class="modal-header"><div><h2 id="modal-title">Ubah password pengguna</h2><p>${escapeHTML(user.name)} · @${escapeHTML(user.username)}</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="notice">Password tidak dapat diubah oleh admin. Minta pengguna masuk, lalu buka <strong>Profil → Ubah password</strong>. Jika lupa password, nonaktifkan akun dan buat akun baru dengan username berbeda.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Tutup</button></div>`);
+    return;
+  }
   openModal(`<div class="modal-header"><div><h2 id="modal-title">Reset password</h2><p>${escapeHTML(user.name)} · @${escapeHTML(user.username)}</p></div><button class="modal-close">×</button></div><form id="password-reset-form"><div class="modal-body"><div class="field"><label>Password baru</label><input name="password" type="password" required minlength="6" autofocus placeholder="Minimal 6 karakter"></div><div class="notice">Sampaikan password baru secara langsung kepada pengguna.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan password</button></div></form>`);
   $('#password-reset-form').addEventListener('submit', async event=>{event.preventDefault();const password=new FormData(event.currentTarget).get('password');user.salt=randomSalt();user.passwordHash=await hashPassword(password,user.salt);saveUsers();closeModal();toast('Password berhasil diperbarui','✓');});
 }
@@ -1075,7 +1192,7 @@ function exportCSV() {
   const link=document.createElement('a'); link.href=URL.createObjectURL(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'})); link.download=`laporan-sorgtime-${data.from}-${data.to}.csv`; link.click(); URL.revokeObjectURL(link.href); toast('Laporan lengkap berhasil diekspor', '⇩');
 }
 
-document.addEventListener('click', e => {
+document.addEventListener('click', async e => {
   const nav = e.target.closest('[data-view]'); if (nav) switchView(nav.dataset.view);
   const category = e.target.closest('[data-category]'); if (category) { activeCategory=category.dataset.category; renderCategories(); renderProducts(); }
   const product = e.target.closest('[data-product]'); if (product) showModifier(products.find(p => String(p.id) === product.dataset.product));
@@ -1088,8 +1205,37 @@ document.addEventListener('click', e => {
   const purchaseEdit = e.target.closest('[data-purchase-edit]'); if (purchaseEdit) showPurchaseEditor(state.inventoryMovements.find(movement => movement.id === purchaseEdit.dataset.purchaseEdit));
   if (e.target.closest('[data-open-hpp]')) showHppManager();
   const accountReset = e.target.closest('[data-account-reset]'); if (accountReset) { const user=authUsers.find(item=>item.id===accountReset.dataset.accountReset); if(user)showPasswordReset(user); }
-  const accountToggle = e.target.closest('[data-account-toggle]'); if (accountToggle) { const user=authUsers.find(item=>item.id===accountToggle.dataset.accountToggle); if(user&&canManageUser(user)){user.status=user.status==='active'?'inactive':'active';saveUsers();renderAccounts();toast(`Akun ${user.status==='active'?'diaktifkan':'dinonaktifkan'}`,'♙');} }
-  const accountDelete = e.target.closest('[data-account-delete]'); if (accountDelete) { const user=authUsers.find(item=>item.id===accountDelete.dataset.accountDelete); if(user&&canManageUser(user)&&confirm(`Hapus akun ${user.name}?`)){authUsers=authUsers.filter(item=>item.id!==user.id);saveUsers();renderAccounts();toast('Akun berhasil dihapus','♙');} }
+  const accountToggle = e.target.closest('[data-account-toggle]');
+  if (accountToggle) {
+    const user = authUsers.find(item => item.id === accountToggle.dataset.accountToggle);
+    if (user && canManageUser(user)) {
+      const next = user.status === 'active' ? 'inactive' : 'active';
+      if (authBackendReady) {
+        const result = await cloud.updateProfile(user.id, { status: next });
+        if (!result.ok) return toast(result.message, '!');
+        const profiles = await cloud.loadProfiles();
+        if (profiles.ok) { authUsers = profiles.users; cacheProfiles(); }
+        renderAccounts(); toast(`Akun ${next === 'active' ? 'diaktifkan' : 'dinonaktifkan'}`, '♙');
+      } else {
+        user.status = next; saveUsers(); renderAccounts(); toast(`Akun ${next === 'active' ? 'diaktifkan' : 'dinonaktifkan'}`, '♙');
+      }
+    }
+  }
+  const accountDelete = e.target.closest('[data-account-delete]');
+  if (accountDelete) {
+    const user = authUsers.find(item => item.id === accountDelete.dataset.accountDelete);
+    if (user && canManageUser(user) && confirm(`Hapus akun ${user.name}?`)) {
+      if (authBackendReady) {
+        const result = await cloud.deleteAuthUser(user.id);
+        if (!result.ok) return toast(result.message, '!');
+        const profiles = await cloud.loadProfiles();
+        if (profiles.ok) { authUsers = profiles.users; cacheProfiles(); }
+        renderAccounts(); toast('Akun berhasil dihapus', '♙');
+      } else {
+        authUsers = authUsers.filter(item => item.id !== user.id); saveUsers(); renderAccounts(); toast('Akun berhasil dihapus', '♙');
+      }
+    }
+  }
   if (e.target.classList.contains('modal-close') || e.target.id==='modal-backdrop') closeModal();
 });
 
@@ -1124,7 +1270,26 @@ $('#notification-button').addEventListener('click', ()=>{ const count=state.inve
 $('#kds-sound').addEventListener('click', e=>{ e.currentTarget.textContent = e.currentTarget.textContent.includes('aktif') ? '♩ Suara mati' : '♩ Suara aktif'; toast('Pengaturan suara diperbarui', '♩'); });
 $('#shift-button').addEventListener('click', showShiftManager);
 $('#start-shift-inline').addEventListener('click', showShiftManager);
-$('#profile-button').addEventListener('click', ()=>{ if(!currentUser)return; openModal(`<div class="modal-header"><div><h2 id="modal-title">Profil pengguna</h2><p>Akun yang sedang aktif</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="profile-detail"><span class="person-avatar">${currentUser.name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()}</span><div><strong>${escapeHTML(currentUser.name)}</strong><small>@${escapeHTML(currentUser.username)} · ${ROLE_LABELS[currentUser.role]}</small></div></div><div class="notice">${ROLE_DESCRIPTIONS[currentUser.role]}</div></div><div class="modal-footer"><button class="button-ghost modal-close">Kembali</button><button class="button-primary" id="logout-button">Keluar dari aplikasi</button></div>`); $('#logout-button').addEventListener('click',logout); });
+$('#profile-button').addEventListener('click', () => {
+  if (!currentUser) return;
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Profil pengguna</h2><p>Akun yang sedang aktif</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="profile-detail"><span class="person-avatar">${currentUser.name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()}</span><div><strong>${escapeHTML(currentUser.name)}</strong><small>@${escapeHTML(currentUser.username)} · ${ROLE_LABELS[currentUser.role]}</small></div></div><div class="notice">${ROLE_DESCRIPTIONS[currentUser.role]}</div></div><div class="modal-footer">${authBackendReady ? '<button class="button-ghost" id="change-password-button">Ubah password</button>' : ''}<button class="button-ghost modal-close">Kembali</button><button class="button-primary" id="logout-button">Keluar dari aplikasi</button></div>`);
+  $('#logout-button').addEventListener('click', logout);
+  if (authBackendReady) $('#change-password-button').addEventListener('click', showChangePassword);
+});
+
+function showChangePassword() {
+  if (!currentUser || !authBackendReady) return;
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Ubah password</h2><p>@${escapeHTML(currentUser.username)}</p></div><button class="modal-close">×</button></div><form id="change-password-form"><div class="modal-body"><div class="field"><label>Password baru</label><input name="password" type="password" required minlength="6" autofocus placeholder="Minimal 6 karakter"></div><div class="field"><label>Ulangi password</label><input name="confirm" type="password" required minlength="6" placeholder="Ketik sekali lagi"></div><div class="notice">Password disimpan dan diverifikasi oleh Supabase Auth.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan password</button></div></form>`);
+  $('#change-password-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const password = data.get('password');
+    if (password !== data.get('confirm')) return toast('Konfirmasi password tidak sama', '!');
+    const result = await cloud.updatePassword(password);
+    if (!result.ok) return toast(result.message, '!');
+    closeModal(); toast('Password berhasil diperbarui', '✓');
+  });
+}
 $('#cart-more').addEventListener('click', ()=>{ if(!state.cart.length) return toast('Belum ada item untuk dibatalkan','!'); if(confirm('Kosongkan seluruh keranjang?')){state.cart=[];renderCart();toast('Keranjang dikosongkan');} });
 
 document.addEventListener('keydown', e=>{ if(e.key==='F2'){e.preventDefault(); if(state.cart.length)showPayment(); else if(!isShiftActive())showShiftManager();} if(e.key==='F4'){e.preventDefault(); if(isShiftActive())showCustomerPicker(); else showShiftManager();} if(e.key==='Escape')closeModal(); });
@@ -1136,7 +1301,7 @@ function hasBlockingOverlay() {
   return Boolean(state.cart.length) || Boolean(backdrop && !backdrop.hidden);
 }
 
-function applyRemoteResult(result) {
+function hydrateRemoteState(result) {
   const productRef = products;
   const addOnRef = addOns;
   const incoming = result.state || {};
@@ -1148,12 +1313,14 @@ function applyRemoteResult(result) {
   state.orders ||= [];
   state.cart ||= [];
   state.networkOnline ??= true;
-  if (Array.isArray(result.users) && result.users.length) authUsers = result.users;
   localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state));
-  localStorage.setItem(USERS_KEY, JSON.stringify(authUsers));
+}
+
+function applyRemoteResult(result) {
+  hydrateRemoteState(result);
   if (currentUser) {
     const refreshed = authUsers.find(user => user.id === currentUser.id && user.status === 'active');
-    if (!refreshed) { lastRemoteAt = Date.now(); logout(); return; }
+    if (!refreshed) { logout(); return; }
     currentUser = refreshed;
   }
   applyingRemote = true;
@@ -1162,8 +1329,8 @@ function applyRemoteResult(result) {
   } finally {
     applyingRemote = false;
   }
-  cloud.markSynced(state, authUsers);
-  lastSyncedFingerprint = cloud.fingerprint(state, authUsers);
+  cloud.markSynced(state, syncUsers());
+  lastSyncedFingerprint = stateFingerprint();
   pendingRemote = null;
   remoteToastShown = false;
   lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : Date.now();
@@ -1171,11 +1338,9 @@ function applyRemoteResult(result) {
 }
 
 function maybeApplyRemote(result) {
-  if (!cloud.enabled || !result || !result.ok || !result.state) return;
-  const ts = result.updatedAt ? Date.parse(result.updatedAt) : 0;
-  if (!ts || ts <= lastRemoteAt) return;
-  if (cloud.fingerprint(result.state, result.users) === lastSyncedFingerprint) {
-    lastRemoteAt = ts;
+  if (!cloud.enabled || !syncReady || !result || !result.ok || !result.state) return;
+  if (cloud.fingerprint(result.state, syncUsers()) === lastSyncedFingerprint) {
+    lastRemoteAt = Math.max(lastRemoteAt, result.updatedAt ? Date.parse(result.updatedAt) : Date.now());
     return;
   }
   if (hasBlockingOverlay()) {
@@ -1189,18 +1354,42 @@ function maybeApplyRemote(result) {
   applyRemoteResult(result);
 }
 
+async function refreshProfiles() {
+  if (!authBackendReady || !syncReady) return;
+  const result = await cloud.loadProfiles();
+  if (!result.ok) { if (result.authError) await logout(); return; }
+  const next = result.users;
+  const changed = cloud.fingerprint({}, next) !== cloud.fingerprint({}, authUsers);
+  authUsers = next;
+  cacheProfiles();
+  if (currentUser) {
+    const me = authUsers.find(user => user.id === currentUser.id && user.status === 'active');
+    if (!me) { await logout(); return; }
+    currentUser = me;
+  }
+  if (changed && currentUser) {
+    applyingRemote = true;
+    try { renderAccounts(); applyPermissions(); } finally { applyingRemote = false; }
+  }
+}
+
 async function pullRemote() {
-  if (!cloud.enabled || syncingRemote || cloud.hasPending()) return;
+  if (!cloud.enabled || !syncReady || syncingRemote || cloud.hasPending()) return;
   if (pendingRemote && !hasBlockingOverlay()) maybeApplyRemote(pendingRemote);
   syncingRemote = true;
   try {
-    maybeApplyRemote(await cloud.load());
+    const result = await cloud.load();
+    if (result.authError) { await logout(); return; }
+    maybeApplyRemote(result);
+    await refreshProfiles();
   } finally {
     syncingRemote = false;
   }
 }
 
 function startCloudSync() {
+  if (!cloud.enabled || cloudSyncStarted) return;
+  cloudSyncStarted = true;
   window.addEventListener('pos:cloud-saved', event => {
     if (event.detail && event.detail.fingerprint) lastSyncedFingerprint = event.detail.fingerprint;
     lastRemoteAt = Math.max(lastRemoteAt, Date.now());
@@ -1209,19 +1398,19 @@ function startCloudSync() {
   window.addEventListener('focus', pullRemote);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullRemote(); });
   setInterval(pullRemote, 20000);
-  cloud.subscribe(row => maybeApplyRemote({ ok: true, state: row.state, users: row.users, updatedAt: row.updated_at }));
+  cloud.subscribe(row => maybeApplyRemote({ ok: true, state: row.state, updatedAt: row.updated_at }));
 }
 
 renderAll();
-initializeAuth();
+await initializeAuth();
 
-if (cloud.enabled) {
-  if (cloudResult.ok && remoteState) {
-    cloud.markSynced(state, authUsers);
-    lastSyncedFingerprint = cloud.fingerprint(state, authUsers);
-  }
-  if (cloudResult.ok && (!remoteState || !remoteUsers)) cloud.save(state, authUsers);
-  startCloudSync();
+if (legacyMode && cloudResult.ok && remoteState) {
+  cloud.markSynced(state, syncUsers());
+  lastSyncedFingerprint = stateFingerprint();
+}
+if (legacyMode && cloudResult.ok && (!remoteState || !remoteUsers)) {
+  cloud.save(state, authUsers);
+  lastSyncedFingerprint = stateFingerprint();
 }
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
