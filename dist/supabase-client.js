@@ -95,6 +95,7 @@ function mapAuthError(error) {
   const message = String(error?.message || '');
   if (/invalid login credentials/i.test(message)) return 'Username atau password tidak sesuai.';
   if (/email not confirmed/i.test(message)) return 'Email belum dikonfirmasi. Matikan "Confirm email" di Supabase Authentication.';
+  if (/email address .*invalid|invalid email/i.test(message)) return 'Username tidak valid untuk pendaftaran. Gunakan huruf kecil, angka, titik, garis bawah, atau tanda minus.';
   if (/user already registered/i.test(message)) return 'Username sudah digunakan.';
   if (/password should be at least/i.test(message)) return 'Password minimal 6 karakter.';
   if (/rate limit|too many requests/i.test(message)) return 'Terlalu banyak percobaan. Coba lagi sebentar.';

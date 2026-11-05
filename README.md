@@ -38,7 +38,7 @@ Buka `http://localhost:4173`. Data demo disimpan di `localStorage` browser.
    supabase link --project-ref <PROJECT_REF>
    supabase db push
    ```
-3. Di **Authentication → Providers → Email**, set **Confirm email = OFF**. Akun memakai email sintetis `@sorgtime.local`, sehingga konfirmasi email tidak mungkin diselesaikan.
+3. Di **Authentication → Providers → Email**, set **Confirm email = OFF**. Akun memakai email sintetis `@sorgtime.local`, sehingga konfirmasi email tidak mungkin diselesaikan. Jika opsi ini masih ON, Supabase mencoba mengirim email konfirmasi dan menolak domain `.local` dengan pesan `email address ... is invalid`/`email_address_invalid`.
 4. Buka `dist/supabase-client.js`, isi `SUPABASE_URL` dan `SUPABASE_ANON_KEY` dari **Project Settings → API**.
 5. Deploy folder `dist`. Aplikasi memuat state terbaru dari tabel `pos_state` saat dibuka, menyimpannya kembali setiap ada perubahan, lalu menyinkronkan antar perangkat lewat realtime `postgres_changes` (jika migrasi `008` dijalankan) dan polling 20 detik sebagai fallback. `localStorage` tetap dipakai sebagai cache/fallback saat offline. Perubahan remote ditunda saat modal terbuka atau keranjang berisi agar input kasir tidak tertimpa.
 
