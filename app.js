@@ -1354,6 +1354,20 @@ function maybeApplyRemote(result) {
   applyRemoteResult(result);
 }
 
+async function refreshLegacyProfiles(result) {
+  if (!legacyMode || !result.ok || !Array.isArray(result.users)) return false;
+  const next = result.users;
+  if (cloud.fingerprint({}, next) === cloud.fingerprint({}, authUsers)) return false;
+  authUsers = next;
+  cacheProfiles();
+  if (currentUser) {
+    const me = authUsers.find(user => user.id === currentUser.id && user.status === 'active');
+    if (!me) { await logout(); return true; }
+    currentUser = me;
+  }
+  return true;
+}
+
 async function refreshProfiles() {
   if (!authBackendReady || !syncReady) return;
   const result = await cloud.loadProfiles();
@@ -1378,9 +1392,14 @@ async function pullRemote() {
   if (pendingRemote && !hasBlockingOverlay()) maybeApplyRemote(pendingRemote);
   syncingRemote = true;
   try {
-    const result = await cloud.load();
+    const result = legacyMode ? await cloud.loadLegacy() : await cloud.load();
     if (result.authError) { await logout(); return; }
+    const profilesChanged = await refreshLegacyProfiles(result);
     maybeApplyRemote(result);
+    if (profilesChanged && currentUser) {
+      applyingRemote = true;
+      try { renderAccounts(); applyPermissions(); } finally { applyingRemote = false; }
+    }
     await refreshProfiles();
   } finally {
     syncingRemote = false;
