@@ -35,11 +35,13 @@ export async function load() {
   const db = getClient();
   if (!db) return { ok: false, enabled: false, state: null, users: null };
   try {
-    const { data, error } = await db
+    const query = db
       .from(TABLE)
       .select('state, users, updated_at')
       .eq('id', ROW_ID)
       .maybeSingle();
+    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Waktu koneksi Supabase habis')), 6000));
+    const { data, error } = await Promise.race([Promise.resolve(query), timeout]);
     if (error) throw error;
     return {
       ok: true,
