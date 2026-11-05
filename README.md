@@ -20,6 +20,8 @@ Pembayaran gaji menampilkan seluruh akun karyawan aktif, termasuk yang belum mem
 
 Pada pembukaan pertama, aplikasi meminta pembuatan akun `sysadmin`. Sysadmin memiliki akses penuh dan dapat membuat akun admin/barista; admin mengelola operasional dan akun barista; barista hanya dapat membuka KDS. Tidak tersedia akun atau password bawaan.
 
+Setelah migrasi `202401010009_per_user_auth_rls.sql` dijalankan, akun diverifikasi oleh **Supabase Auth** (username dipetakan ke `${username}@sorgtime.local`) dan seluruh data dilindungi RLS. Akun lama yang hanya tersimpan lokal tidak dapat dipakai lagi; buat ulang akun melalui layar awal. Setiap pengguna dapat mengganti password sendiri dari **Profil → Ubah password**. Admin tidak dapat mereset password pengguna lain; sysadmin dapat menghapus akun (termasuk auth user) lalu membuat ulang dengan username yang sama.
+
 ## Menjalankan secara lokal
 
 ```bash
@@ -31,15 +33,16 @@ Buka `http://localhost:4173`. Data demo disimpan di `localStorage` browser.
 ## Menghubungkan Supabase
 
 1. Buat project di [supabase.com](https://supabase.com).
-2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010008_enable_pos_state_realtime.sql`) atau dengan Supabase CLI:
+2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010009_per_user_auth_rls.sql`) atau dengan Supabase CLI:
    ```bash
    supabase link --project-ref <PROJECT_REF>
    supabase db push
    ```
-3. Buka `dist/supabase-client.js`, isi `SUPABASE_URL` dan `SUPABASE_ANON_KEY` dari **Project Settings → API**.
-4. Deploy folder `dist`. Aplikasi memuat state terbaru dari tabel `pos_state` saat dibuka, menyimpannya kembali setiap ada perubahan, lalu menyinkronkan antar perangkat lewat realtime `postgres_changes` (jika migrasi `008` dijalankan) dan polling 20 detik sebagai fallback. `localStorage` tetap dipakai sebagai cache/fallback saat offline. Perubahan remote ditunda saat modal terbuka atau keranjang berisi agar input kasir tidak tertimpa.
+3. Di **Authentication → Providers → Email**, set **Confirm email = OFF**. Akun memakai email sintetis `@sorgtime.local`, sehingga konfirmasi email tidak mungkin diselesaikan.
+4. Buka `dist/supabase-client.js`, isi `SUPABASE_URL` dan `SUPABASE_ANON_KEY` dari **Project Settings → API**.
+5. Deploy folder `dist`. Aplikasi memuat state terbaru dari tabel `pos_state` saat dibuka, menyimpannya kembali setiap ada perubahan, lalu menyinkronkan antar perangkat lewat realtime `postgres_changes` (jika migrasi `008` dijalankan) dan polling 20 detik sebagai fallback. `localStorage` tetap dipakai sebagai cache/fallback saat offline. Perubahan remote ditunda saat modal terbuka atau keranjang berisi agar input kasir tidak tertimpa.
 
-> Catatan keamanan: arsitektur ini memakai anon key publik dan kebijakan RLS permisif pada `pos_state` agar prototipe dapat berjalan tanpa Supabase Auth. Untuk produksi, pindahkan autentikasi ke Supabase Auth dan batasi RLS per pengguna.
+> Catatan keamanan: setelah migrasi `009`, anon key tidak dapat membaca/menulis `pos_state` maupun tabel `users`; semua akses membutuhkan sesi login dan RLS membatasi sesuai peran. Jika migrasi `009` belum dijalankan, aplikasi otomatis memakai autentikasi lokal lama agar tetap berjalan. Setelah menjalankan `009`, muat ulang aplikasi (tutup semua tab lama) dan buat ulang akun. Menjalankan ulang migrasi `009` aman dan diperlukan bila sebelumnya sudah pernah dijalankan tanpa fungsi `delete_app_user`.
 
 ## Deploy GitHub Pages
 
@@ -47,4 +50,4 @@ Workflow `.github/workflows/github-pages-deploy.yml` akan mempublikasikan folder
 
 ## Catatan
 
-Versi ini adalah implementasi frontend dengan penyimpanan lokal dan sinkronisasi snapshot ke Supabase. Printer native, gateway pembayaran, dan Supabase Auth + RLS per pengguna masih memerlukan layanan produksi terpisah. Sinkronisasi multi-perangkat memakai model snapshot last-write-wins; konflik bersamaan dapat menimpa perubahan terakhir.
+Versi ini adalah implementasi frontend dengan penyimpanan lokal, Supabase Auth per pengguna, RLS berbasis peran, dan sinkronisasi snapshot ke Supabase. Printer native serta gateway pembayaran masih memerlukan layanan produksi terpisah. Sinkronisasi multi-perangkat memakai model snapshot last-write-wins; konflik bersamaan dapat menimpa perubahan terakhir.
