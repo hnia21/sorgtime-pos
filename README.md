@@ -28,6 +28,23 @@ python3 -m http.server 4173 --directory dist
 
 Buka `http://localhost:4173`. Data demo disimpan di `localStorage` browser.
 
+## Menghubungkan Supabase
+
+1. Buat project di [supabase.com](https://supabase.com).
+2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010007_create_pos_state_table.sql`) atau dengan Supabase CLI:
+   ```bash
+   supabase link --project-ref <PROJECT_REF>
+   supabase db push
+   ```
+3. Buka `dist/supabase-client.js`, isi `SUPABASE_URL` dan `SUPABASE_ANON_KEY` dari **Project Settings → API**.
+4. Deploy folder `dist`. Aplikasi akan memuat state terbaru dari tabel `pos_state` saat dibuka dan menyimpannya kembali setiap ada perubahan. `localStorage` tetap dipakai sebagai cache/fallback saat offline.
+
+> Catatan keamanan: arsitektur ini memakai anon key publik dan kebijakan RLS permisif pada `pos_state` agar prototipe dapat berjalan tanpa Supabase Auth. Untuk produksi, pindahkan autentikasi ke Supabase Auth dan batasi RLS per pengguna.
+
+## Deploy GitHub Pages
+
+Workflow `.github/workflows/github-pages-deploy.yml` akan mempublikasikan folder `dist` setiap push ke branch `main`. Aktifkan **Settings → Pages → Source: GitHub Actions** pada repo GitHub.
+
 ## Catatan
 
-Versi ini adalah implementasi frontend local-first untuk validasi alur dan UX. Integrasi backend, printer native, gateway pembayaran, autentikasi PIN, dan sinkronisasi multi-perangkat memerlukan layanan produksi terpisah.
+Versi ini adalah implementasi frontend dengan penyimpanan lokal dan sinkronisasi snapshot ke Supabase. Printer native, gateway pembayaran, autentikasi PIN, dan sinkronisasi real-time multi-perangkat masih memerlukan layanan produksi terpisah.

@@ -4,6 +4,7 @@
   "description": "Prototipe fungsional aplikasi kasir dan operasional Sorgtime Diet Coffee. Aplikasi menggunakan data produk, aset, palet, dan identitas visual dari proyek Sorgtime serta mencakup POS, KDS barista, inventori berbasis resep, pelanggan/loyalty, laporan, transaksi tunai dan QRIS statis, serta simulasi offline.",
   "main": "index.js",
   "scripts": {
+    "build": "echo \"Sorgtime POS: folder dist siap dideploy\"",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

@@ -1,6 +1,6 @@
-const CACHE = 'sorgtime-pos-v20';
+const CACHE = 'sorgtime-pos-v21';
 const ASSETS = [
-  './', './index.html', './styles.css', './app.js', './icon.svg', './manifest.webmanifest',
+  './', './index.html', './styles.css', './app.js', './supabase-client.js', './vendor/supabase.js', './icon.svg', './manifest.webmanifest',
   './assets/sorgtime-logo.png', './assets/fonts/tuku-hand.otf',
   './assets/menu/soft.png', './assets/menu/strong.png', './assets/menu/montblanc.png',
   './assets/menu/bluecloud.png', './assets/menu/matcha.png', './assets/menu/chocolate.png',

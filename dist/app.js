@@ -1,3 +1,5 @@
+import { cloud } from './supabase-client.js';
+
 const rupiah = value => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(value);
 const nowTime = () => new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date());
 
@@ -73,12 +75,24 @@ const customers = [];
 
 localStorage.removeItem('sorgtimePosStateV2');
 localStorage.removeItem('ruangSeduhState');
-const saved = JSON.parse(localStorage.getItem('sorgtimePosStateV3') || 'null');
-const state = saved || {
+const localSaved = JSON.parse(localStorage.getItem('sorgtimePosStateV3') || 'null');
+if (cloud.enabled) {
+  const gate = document.getElementById('auth-content');
+  if (gate && !gate.innerHTML.trim()) gate.innerHTML = '<div class="auth-form-wrap"><span class="auth-step">MENYAMBUNGKAN</span><h2>Memuat data outlet</h2><p>Mengambil data terbaru dari Supabase...</p></div>';
+}
+const cloudResult = cloud.enabled ? await cloud.load() : { ok: false, enabled: false, state: null, users: null };
+const remoteState = cloudResult.state && Object.keys(cloudResult.state).length ? cloudResult.state : null;
+const remoteUsers = Array.isArray(cloudResult.users) && cloudResult.users.length ? cloudResult.users : null;
+const saved = remoteState || localSaved;
+const state = {
   cart: [], orders: [], selectedCustomer: null, promo: null,
   inventory: ingredients, customers, networkOnline: true, qrisImage: null, orderNo: 1,
-  salesCount: 0, revenue: 0, cashSales: 0, qrisSales: 0
+  salesCount: 0, revenue: 0, cashSales: 0, qrisSales: 0,
+  ...(saved || {})
 };
+state.inventory ||= ingredients;
+state.orders ||= [];
+state.cart ||= [];
 state.products ||= defaultProducts.map(product => ({ ...product, price: Number(state.menuPrices?.[product.id] ?? product.price) }));
 state.addOns ||= defaultAddOns.map(addOn => ({ ...addOn, price: Number(state.addOnPrices?.[addOn.id] ?? addOn.price) }));
 delete state.menuPrices;
@@ -126,7 +140,7 @@ state.orders.forEach((order, index) => {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const save = () => localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state));
+const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); cloud.save(state, authUsers); };
 const nextOrderId = () => `A-${String(state.orderNo).padStart(3, '0')}`;
 const escapeHTML = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 const orderRef = order => order.uid || order.id;
@@ -146,10 +160,10 @@ const ROLE_PERMISSIONS = {
   admin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
   barista: ['kds']
 };
-let authUsers = JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
+let authUsers = remoteUsers || JSON.parse(localStorage.getItem(USERS_KEY) || '[]');
 let currentUser = null;
 
-const saveUsers = () => localStorage.setItem(USERS_KEY, JSON.stringify(authUsers));
+const saveUsers = () => { localStorage.setItem(USERS_KEY, JSON.stringify(authUsers)); cloud.save(state, authUsers); };
 const randomSalt = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 async function hashPassword(password, salt) {
   const encoder = new TextEncoder();
@@ -1112,6 +1126,10 @@ setInterval(renderShiftState, 1000);
 
 renderAll();
 initializeAuth();
+
+if (cloudResult.enabled && cloudResult.ok && (!remoteState || !remoteUsers)) {
+  cloud.save(state, authUsers);
+}
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   let refreshing = false;

@@ -1,90 +1,87 @@
-// Supabase Client Configuration
-// Setup: https://supabase.com/docs/guides/getting-started
+// Koneksi Supabase untuk Sorgtime POS.
+// Isi SUPABASE_URL dan SUPABASE_ANON_KEY dari dashboard Supabase:
+// Project Settings -> API -> Project URL & anon public key.
 
-import { createClient } from '@supabase/supabase-js'
+export const SUPABASE_URL = 'https://jqocyhbmpiguuetdtqbm.supabase.co';
+export const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxb2N5aGJtcGlndXVldGR0cWJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTM4MTU3NDIsImV4cCI6MjEwOTM5MTc0Mn0.mtYouXCXxBcyXosaLi0F6FCLHlxHOPowxUdmsddOS2c';
 
-const supabaseUrl = 'https://YOUR-PROJECT.supabase.co'
-const supabaseAnonKey = 'YOUR-PUBLIC-ANON-KEY'
+const TABLE = 'pos_state';
+const ROW_ID = 1;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+const looksLikePlaceholder = value => !value || /YOUR-|YOUR_/i.test(value);
 
-// Helper functions for the POS application
+export const isConfigured = !looksLikePlaceholder(SUPABASE_URL) && !looksLikePlaceholder(SUPABASE_ANON_KEY);
 
-export async function fetchProducts() {
-  const { data, error } = await supabase.from('products').select('*')
-  if (error) console.error('Error fetching products:', error)
-  return data || []
+let client = null;
+let pending = null;
+let timer = null;
+
+function getClient() {
+  if (!isConfigured) return null;
+  if (!client) {
+    const factory = window.supabase?.createClient;
+    if (typeof factory !== 'function') {
+      console.warn('Supabase JS belum termuat. Pastikan vendor/supabase.js dimuat sebelum app.js.');
+      return null;
+    }
+    client = factory(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
+  return client;
 }
 
-export async function insertProduct(product) {
-  const { data, error } = await supabase.from('products').insert(product).single()
-  if (error) console.error('Error inserting product:', error)
-  return data
+// Mengembalikan { ok, state, users }.
+// ok=false berarti gagal terhubung; state/users null berarti baris belum ada.
+export async function load() {
+  const db = getClient();
+  if (!db) return { ok: false, enabled: false, state: null, users: null };
+  try {
+    const { data, error } = await db
+      .from(TABLE)
+      .select('state, users, updated_at')
+      .eq('id', ROW_ID)
+      .maybeSingle();
+    if (error) throw error;
+    return {
+      ok: true,
+      enabled: true,
+      state: data?.state || null,
+      users: data?.users || null,
+      updatedAt: data?.updated_at || null
+    };
+  } catch (error) {
+    console.error('Gagal memuat data Supabase:', error);
+    return { ok: false, enabled: true, state: null, users: null };
+  }
 }
 
-export async function updateProduct(id, updates) {
-  const { data, error } = await supabase.from('products').update(updates).eq('id', id).single()
-  if (error) console.error('Error updating product:', error)
-  return data
+export function save(state, users) {
+  if (!isConfigured) return;
+  pending = { state, users };
+  clearTimeout(timer);
+  timer = setTimeout(flush, 300);
 }
 
-export async function deleteProduct(id) {
-  const { error } = await supabase.from('products').delete().eq('id', id)
-  if (error) console.error('Error deleting product:', error)
+export async function flush() {
+  const db = getClient();
+  if (!db || !pending) return;
+  const payload = pending;
+  pending = null;
+  try {
+    const { error } = await db.from(TABLE).upsert(
+      {
+        id: ROW_ID,
+        state: payload.state,
+        users: payload.users,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'id' }
+    );
+    if (error) throw error;
+    window.dispatchEvent(new CustomEvent('pos:cloud-saved', { detail: { at: Date.now() } }));
+  } catch (error) {
+    console.error('Gagal menyimpan data Supabase:', error);
+    window.dispatchEvent(new CustomEvent('pos:cloud-error', { detail: { error } }));
+  }
 }
 
-export async function fetchAddons() {
-  const { data, error } = await supabase.from('addons').select('*')
-  if (error) console.error('Error fetching addons:', error)
-  return data || []
-}
-
-export async function fetchIngredients() {
-  const { data, error } = await supabase.from('ingredients').select('*')
-  if (error) console.error('Error fetching ingredients:', error)
-  return data || []
-}
-
-export async function insertIngredient(ingredient) {
-  const { data, error } = await supabase.from('ingredients').insert(ingredient).single()
-  if (error) console.error('Error inserting ingredient:', error)
-  return data
-}
-
-export async function fetchCustomers() {
-  const { data, error } = await supabase.from('customers').select('*')
-  if (error) console.error('Error fetching customers:', error)
-  return data || []
-}
-
-export async function upsertCustomer(customer) {
-  const { data, error } = await supabase.from('customers').upsert(customer).single()
-  if (error) console.error('Error upserting customer:', error)
-  return data
-}
-
-export async function fetchTransactions({
-  from = '2024-01-01',
-  to = new Date().toISOString(),
-  cashier = '',
-  payment = '',
-  status = ''
-} = {}) {
-  let query = supabase.from('transactions').select('*').order('created_at', { ascending: false })
-
-  if (from) query = query.gte('created_at', from)
-  if (to) query = query.lte('created_at', to)
-  if (cashier) query = query.eq('user_id', cashier)
-  if (payment) query = query.eq('payment_method', payment)
-  if (status) query = query.eq('status', status)
-
-  const { data, error } = await query
-  if (error) console.error('Error fetching transactions:', error)
-  return data || []
-}
-
-export async function insertTransaction(transaction) {
-  const { data, error } = await supabase.from('transactions').insert(transaction).single()
-  if (error) console.error('Error inserting transaction:', error)
-  return data
-}
+export const cloud = { enabled: isConfigured, load, save, flush };
