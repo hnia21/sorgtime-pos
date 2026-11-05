@@ -143,6 +143,7 @@ let syncingRemote = false;
 let pendingRemote = null;
 let remoteToastShown = false;
 let lastRemoteAt = cloudResult.updatedAt ? Date.parse(cloudResult.updatedAt) : 0;
+let lastSyncedFingerprint = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1162,6 +1163,7 @@ function applyRemoteResult(result) {
     applyingRemote = false;
   }
   cloud.markSynced(state, authUsers);
+  lastSyncedFingerprint = cloud.fingerprint(state, authUsers);
   pendingRemote = null;
   remoteToastShown = false;
   lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : Date.now();
@@ -1172,6 +1174,10 @@ function maybeApplyRemote(result) {
   if (!cloud.enabled || !result || !result.ok || !result.state) return;
   const ts = result.updatedAt ? Date.parse(result.updatedAt) : 0;
   if (!ts || ts <= lastRemoteAt) return;
+  if (cloud.fingerprint(result.state, result.users) === lastSyncedFingerprint) {
+    lastRemoteAt = ts;
+    return;
+  }
   if (hasBlockingOverlay()) {
     pendingRemote = result;
     if (!remoteToastShown) {
@@ -1195,7 +1201,10 @@ async function pullRemote() {
 }
 
 function startCloudSync() {
-  window.addEventListener('pos:cloud-saved', () => { lastRemoteAt = Math.max(lastRemoteAt, Date.now() + 1500); });
+  window.addEventListener('pos:cloud-saved', event => {
+    if (event.detail && event.detail.fingerprint) lastSyncedFingerprint = event.detail.fingerprint;
+    lastRemoteAt = Math.max(lastRemoteAt, Date.now());
+  });
   window.addEventListener('pos:cloud-error', () => { if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
   window.addEventListener('focus', pullRemote);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullRemote(); });
@@ -1207,7 +1216,10 @@ renderAll();
 initializeAuth();
 
 if (cloud.enabled) {
-  if (cloudResult.ok && remoteState) cloud.markSynced(state, authUsers);
+  if (cloudResult.ok && remoteState) {
+    cloud.markSynced(state, authUsers);
+    lastSyncedFingerprint = cloud.fingerprint(state, authUsers);
+  }
   if (cloudResult.ok && (!remoteState || !remoteUsers)) cloud.save(state, authUsers);
   startCloudSync();
 }
