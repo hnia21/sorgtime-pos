@@ -18,6 +18,18 @@ let timer = null;
 let saving = false;
 let lastPayload = '';
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+export function fingerprint(state, users) {
+  return stableStringify({ state, users });
+}
+
 function getClient() {
   if (!isConfigured) return null;
   if (!client) {
@@ -70,15 +82,16 @@ export function hasPending() {
 }
 
 export function markSynced(state, users) {
-  lastPayload = JSON.stringify({ state, users });
+  lastPayload = fingerprint(state, users);
 }
 
 export async function flush() {
+  timer = null;
   const db = getClient();
   if (!db || !pending) return;
   const payload = pending;
   pending = null;
-  const serialized = JSON.stringify({ state: payload.state, users: payload.users });
+  const serialized = fingerprint(payload.state, payload.users);
   if (serialized === lastPayload) return;
   saving = true;
   try {
@@ -93,7 +106,7 @@ export async function flush() {
     );
     if (error) throw error;
     lastPayload = serialized;
-    window.dispatchEvent(new CustomEvent('pos:cloud-saved', { detail: { at: Date.now() } }));
+    window.dispatchEvent(new CustomEvent('pos:cloud-saved', { detail: { at: Date.now(), fingerprint: serialized } }));
   } catch (error) {
     console.error('Gagal menyimpan data Supabase:', error);
     window.dispatchEvent(new CustomEvent('pos:cloud-error', { detail: { error } }));
@@ -128,4 +141,4 @@ export function subscribe(onChange) {
   }
 }
 
-export const cloud = { enabled: isConfigured, load, save, flush, hasPending, markSynced, subscribe };
+export const cloud = { enabled: isConfigured, load, save, flush, hasPending, markSynced, subscribe, fingerprint };
