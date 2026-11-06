@@ -24,7 +24,11 @@ button { color: inherit; }
 button:focus-visible, input:focus-visible { outline: 3px solid rgba(181, 74, 43, .22); outline-offset: 2px; }
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: 104px minmax(0, 1fr); }
-.sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; width: 104px; padding: 22px 12px 14px; background: var(--espresso); color: white; display: flex; flex-direction: column; align-items: stretch; }
+.sidebar { position: fixed; z-index: 20; inset: 0 auto 0 0; width: 104px; padding: 22px 12px 14px; background: var(--espresso); color: white; display: flex; flex-direction: column; align-items: stretch; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.35) transparent; -webkit-overflow-scrolling: touch; }
+.sidebar::-webkit-scrollbar { width: 6px; }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
+.sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,.35); border-radius: 999px; }
+.sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.55); }
 .brand { border: 0; background: none; color: #f9efe4; display: flex; flex-direction: column; align-items: center; gap: 7px; cursor: pointer; padding: 0 4px 26px; }
 .brand-mark { width: 42px; height: 42px; display: grid; place-items: center; color: #dc6c46; }
 .brand-mark svg { width: 36px; height: 36px; }
