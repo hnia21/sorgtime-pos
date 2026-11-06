@@ -91,14 +91,46 @@ function isAuthError(error) {
   return /jwt|unauthor|permission denied|row-level security/i.test(String(error?.message || ''));
 }
 
+const CONFIRM_EMAIL_MESSAGE = 'Supabase masih meminta konfirmasi email. Buka Authentication → Providers → Email, matikan "Confirm email", simpan, lalu coba lagi.';
+
 function mapAuthError(error) {
   const message = String(error?.message || '');
+  const code = String(error?.code || '');
   if (/invalid login credentials/i.test(message)) return 'Username atau password tidak sesuai.';
-  if (/email not confirmed/i.test(message)) return 'Email belum dikonfirmasi. Matikan "Confirm email" di Supabase Authentication.';
+  if (/email not confirmed/i.test(message)) return CONFIRM_EMAIL_MESSAGE;
+  if (code === 'over_email_send_rate_limit' || /email.*rate limit/i.test(message)) {
+    return 'Batas kirim email Supabase tercapai karena "Confirm email" masih aktif. Matikan Confirm email di Authentication → Providers → Email, lalu coba lagi.';
+  }
+  if (/email address .*invalid|invalid email/i.test(message)) return 'Username tidak valid untuk pendaftaran. Gunakan huruf kecil, angka, titik, garis bawah, atau tanda minus.';
   if (/user already registered/i.test(message)) return 'Username sudah digunakan.';
   if (/password should be at least/i.test(message)) return 'Password minimal 6 karakter.';
-  if (/rate limit|too many requests/i.test(message)) return 'Terlalu banyak percobaan. Coba lagi sebentar.';
+  if (/rate limit|too many requests/i.test(message)) return 'Terlalu banyak percobaan. Tunggu beberapa menit lalu coba lagi.';
   return message || 'Terjadi kesalahan autentikasi.';
+}
+
+// Endpoint publik ini melaporkan apakah Supabase masih mengirim email
+// konfirmasi. Jika masih aktif, signup ke domain sintetis pasti gagal dan
+// hanya memicu rate limit email, jadi hentikan sebelum request dikirim.
+export async function getAuthSettings() {
+  if (!isConfigured) return { ok: false, settings: null };
+  try {
+    const response = await withTimeout(
+      fetch(`${SUPABASE_URL}/auth/v1/settings`, { headers: { apikey: SUPABASE_ANON_KEY } }),
+      6000
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return { ok: true, settings: await response.json() };
+  } catch (error) {
+    return { ok: false, settings: null, error };
+  }
+}
+
+async function checkAutoconfirm() {
+  const result = await getAuthSettings();
+  if (result.ok && result.settings && result.settings.mailer_autoconfirm === false) {
+    return { ok: false, message: CONFIRM_EMAIL_MESSAGE };
+  }
+  return { ok: true };
 }
 
 function profileErrorMessage(error) {
@@ -150,6 +182,8 @@ export async function signIn(username, password) {
 export async function signUp(username, password, name) {
   const db = getClient();
   if (!db) return { ok: false, message: 'Supabase belum dikonfigurasi.' };
+  const guard = await checkAutoconfirm();
+  if (!guard.ok) return guard;
   try {
     const { data, error } = await withTimeout(
       db.auth.signUp({
@@ -176,6 +210,8 @@ export async function signUp(username, password, name) {
 export async function createAuthUser(username, password) {
   const temp = getTempClient();
   if (!temp) return { ok: false, message: 'Supabase Auth tidak tersedia.' };
+  const guard = await checkAutoconfirm();
+  if (!guard.ok) return guard;
   try {
     const { data, error } = await withTimeout(
       temp.auth.signUp({ email: usernameToEmail(username), password }),
@@ -474,6 +510,7 @@ export const cloud = {
   createAuthUser,
   signOut,
   updatePassword,
+  getAuthSettings,
   hasAnyUser,
   bootstrapFirstAdmin,
   loadProfile,

@@ -991,3 +991,114 @@ button { border-radius: 0; }
   .transaction-detail-head > div:nth-child(-n+2) { border-bottom: 1px solid var(--ink); }
   .transaction-detail-grid { grid-template-columns: 1fr; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   MOBILE HARDENING
+   The editorial theme redefines several layout rules after the
+   first responsive block, so on phones the cart turned into a
+   full-screen fixed overlay and the topbar/view spacing was too
+   large. These rules are appended last so they always win.
+   ───────────────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  html, body { max-width: 100%; }
+  .app-shell, .main-area { min-width: 0; max-width: 100%; }
+
+  .sidebar { z-index: 60; overflow-y: auto; overscroll-behavior: contain; box-shadow: 8px 0 32px rgba(20, 14, 10, .22); }
+
+  .view { min-height: calc(100vh - 74px); min-height: calc(100dvh - 74px); padding: 18px 16px calc(28px + env(safe-area-inset-bottom)); }
+  #view-pos { padding: 0; }
+
+  .topbar { height: 74px; padding: 0 14px; gap: 10px; }
+  .topbar > div:nth-child(2) { min-width: 0; }
+  .topbar h1 { font-size: 22px; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .topbar-actions { gap: 8px; }
+
+  .pos-layout { display: block; min-height: 0; }
+  .catalog-panel { padding: 16px 16px calc(190px + env(safe-area-inset-bottom)); }
+  .catalog-meta { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+  .catalog-meta h2 { font-size: 25px; }
+
+  .cart-panel {
+    position: fixed;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    border-left: 0;
+    border-top: 2px solid var(--ink);
+    background: var(--paper);
+    box-shadow: 0 -12px 30px rgba(33, 30, 30, .16);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .cart-summary { padding: 8px 16px 12px; }
+
+  .section-toolbar { flex-wrap: wrap; align-items: flex-start; }
+  .toolbar-group { width: 100%; }
+
+  .report-filter-card { grid-template-columns: 1fr 1fr; }
+  .report-presets { grid-column: 1 / -1; }
+
+  .modal-backdrop { padding: 10px; }
+  .modal { max-height: calc(100vh - 20px); max-height: calc(100dvh - 20px); }
+
+  .toast-stack { left: 12px; right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .toast { min-width: 0; width: 100%; max-width: none; }
+}
+
+@media (max-width: 620px) {
+  .topbar { padding: 0 12px; }
+  .topbar h1 { font-size: 20px; }
+  .eyebrow { max-width: 46vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shift-pill { padding: 6px 8px; }
+  .shift-pill strong { font-size: 10px; }
+
+  .catalog-panel { padding: 14px 12px calc(180px + env(safe-area-inset-bottom)); }
+  .search-row { grid-template-columns: 1fr 44px; gap: 8px; }
+  .search-box { height: 44px; padding: 0 12px; }
+  .scan-button { font-size: 18px; }
+  .category-tabs { padding-top: 14px; }
+  .category-tab { font-size: 11px; padding: 8px 11px 6px; }
+
+  .catalog-meta h2 { font-size: 22px; }
+  .catalog-actions { width: 100%; flex-direction: row; }
+  .catalog-actions button { flex: 1; }
+
+  .product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .product-card { min-height: 168px; }
+  .product-art { height: 104px; }
+
+  .section-toolbar { flex-direction: column; align-items: stretch; }
+  .section-toolbar h2 { font-size: 26px; }
+  .section-toolbar p { font-size: 10px; }
+
+  .metric-grid, .kds-stats { grid-template-columns: 1fr 1fr; gap: 9px; }
+  .role-overview { grid-template-columns: 1fr; }
+  .metric-card { min-height: 94px; padding: 13px; }
+  .metric-card h3 { font-size: 19px; }
+
+  .card-header { padding: 13px 14px; }
+  .content-card { border-radius: 2px; }
+
+  .history-filter-card, .report-filter-card { padding: 12px; grid-template-columns: 1fr; }
+  .history-search { grid-column: auto; }
+  .report-presets { grid-column: auto; grid-template-columns: 1fr 1fr; }
+  .history-filter-card input, .history-filter-card select,
+  .report-filter-card input, .report-filter-card select { height: 42px; font-size: 11px; }
+
+  .transaction-detail-head { grid-template-columns: 1fr 1fr; }
+  .shift-summary-grid { grid-template-columns: 1fr 1fr; }
+
+  .modal-header { padding: 15px 14px 12px; }
+  .modal-header h2 { font-size: 19px; }
+  .modal-body { padding: 14px; }
+  .modal-footer { padding: 12px 14px 14px; }
+  .modal-footer button { height: 46px; }
+
+  .cart-summary { padding: 8px 14px 10px; }
+  .pay-button { height: 46px; }
+  .total-line strong { font-size: 18px; }
+}
