@@ -8,7 +8,7 @@ Kasir menggunakan siklus shift penuh. Saat shift dibuka, kas awal dicatat dan no
 
 Sysadmin dan admin dapat membuat atau mengedit promo/voucher (persentase maupun nominal, termasuk minimum pembelian), mengelola katalog menu lengkap dengan foto dan harga, serta menambah, mengedit, atau menghapus setiap item “Tambahan” langsung dari modal Atur Pesanan. Foto yang diunggah dioptimalkan sebelum disimpan. Pengaturan tersebut tersimpan di perangkat dan harga item yang sudah masuk keranjang tidak diubah secara retroaktif.
 
-Inventori mendukung penambahan dan pengeditan item bahan, penghapusan item, serta penyesuaian stok dengan mode tambah, kurangi, atau set jumlah aktual. Setiap penyesuaian dicatat sebagai pergerakan stok lokal dan diringkas pada metrik harian.
+Inventori mendukung penambahan dan pengeditan item bahan, penghapusan item, serta penyesuaian stok dengan mode tambah, kurangi, atau set jumlah aktual. Jumlah dapat diisi dalam ml/gram atau L/kg; angka 1.000 ml/gram otomatis ditampilkan sebagai 1 L/kg. Setiap penyesuaian dicatat sebagai pergerakan stok lokal dan diringkas pada metrik harian.
 
 Resep dan HPP awal disinkronkan dari `dist/assets/hpp.xlsx` untuk Original Soft, Original Strong, Caramel, Tiramisu, Hazelnut, dan Matcha. Setiap penjualan mengurangi stok berdasarkan pemakaian ml, gram, atau pcs per gelas. Admin dapat mengubah pemetaan item stok, takaran, satuan, harga beli, dan isi kemasan melalui tombol **Resep & HPP**.
 
@@ -20,7 +20,9 @@ Pembayaran gaji menampilkan seluruh akun karyawan aktif, termasuk yang belum mem
 
 Pada pembukaan pertama, aplikasi meminta pembuatan akun `sysadmin`. Sysadmin memiliki akses penuh dan dapat membuat akun admin/barista; admin mengelola operasional dan akun barista; barista dapat membuat pesanan, menerima pembayaran, membuka/menutup shift, dan mengelola KDS. Barista tetap tidak dapat mengubah harga menu, promo, inventori, laporan, atau akun. Tidak tersedia akun atau password bawaan.
 
-Setelah migrasi `202401010009_per_user_auth_rls.sql` dijalankan, akun diverifikasi oleh **Supabase Auth** (username dipetakan ke `${username}@sorgtime.local`) dan seluruh data dilindungi RLS. Akun lama yang hanya tersimpan lokal tidak dapat dipakai lagi; buat ulang akun melalui layar awal. Setiap pengguna dapat mengganti password sendiri dari **Profil → Ubah password**. Admin tidak dapat mereset password pengguna lain; sysadmin dapat menghapus akun (termasuk auth user) lalu membuat ulang dengan username yang sama.
+Setelah migrasi `202401010009_per_user_auth_rls.sql` dijalankan, akun diverifikasi oleh **Supabase Auth** (username dipetakan ke `${username}@sorgtime.local`) dan seluruh data dilindungi RLS. Akun lama yang hanya tersimpan lokal tidak dapat dipakai lagi; buat ulang akun melalui layar awal. Setiap pengguna dapat mengganti password sendiri dari **Profil → Ubah password**.
+
+Pada menu **Akun**, admin dan sysadmin dapat memakai tombol **Edit** untuk mengubah nama, peran, status, dan mereset password pengguna yang lupa password (field password boleh dikosongkan). Admin hanya dapat mengedit akun barista; sysadmin dapat mengedit akun admin dan barista. Akun **sysadmin** dilindungi dan tidak dapat diubah dari menu ini; gunakan **Profil → Ubah password** untuk akun sendiri. Fitur edit memerlukan migrasi `202401010010_admin_manage_accounts.sql`.
 
 ## Menjalankan secara lokal
 
@@ -33,7 +35,7 @@ Buka `http://localhost:4173`. Data demo disimpan di `localStorage` browser.
 ## Menghubungkan Supabase
 
 1. Buat project di [supabase.com](https://supabase.com).
-2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010009_per_user_auth_rls.sql`) atau dengan Supabase CLI:
+2. Jalankan migrasi di folder `supabase/migrations` melalui SQL Editor Supabase (urut dari `202401010001_...` sampai `202401010010_admin_manage_accounts.sql`) atau dengan Supabase CLI:
    ```bash
    supabase link --project-ref <PROJECT_REF>
    supabase db push
