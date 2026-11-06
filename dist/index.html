@@ -41,6 +41,7 @@
         <button class="nav-item" data-view="customers"><span class="nav-icon">♙</span><span>Pelanggan</span></button>
         <button class="nav-item" data-view="transactions"><span class="nav-icon">▤</span><span>Riwayat</span></button>
         <button class="nav-item" data-view="reports"><span class="nav-icon">↗</span><span>Laporan</span></button>
+        <button class="nav-item" data-view="payslip"><span class="nav-icon">▦</span><span>Slip Gaji</span></button>
         <button class="nav-item" data-view="accounts" id="nav-accounts"><span class="nav-icon">⚙</span><span>Akun</span></button>
       </nav>
 
@@ -200,6 +201,17 @@
           <div class="content-card"><div class="card-header"><div><h3>Metode pembayaran</h3><p>Distribusi nilai transaksi</p></div></div><div class="payment-breakdown" id="payment-breakdown"></div></div>
           <div class="content-card"><div class="card-header"><div><h3>Kesehatan operasional</h3><p>Indikator shift berjalan</p></div></div><div class="health-list" id="health-list"></div></div>
         </div>
+      </section>
+
+      <section class="view" id="view-payslip">
+        <div class="section-toolbar">
+          <div><span class="hand-label">GAJI KARYAWAN</span><h2>Slip gaji saya</h2><p>Rincian kehadiran, bonus, dan pembayaran gaji setiap bulan</p></div>
+          <div class="toolbar-group">
+            <label class="payslip-month-field"><span>Bulan</span><input id="payslip-month" type="month"></label>
+            <button class="primary-small" id="payslip-print">⇩ Cetak / PDF</button>
+          </div>
+        </div>
+        <div id="payslip-content"></div>
       </section>
 
       <section class="view" id="view-accounts">

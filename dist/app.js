@@ -75,7 +75,13 @@ const customers = [];
 
 localStorage.removeItem('sorgtimePosStateV2');
 localStorage.removeItem('ruangSeduhState');
-const localSaved = JSON.parse(localStorage.getItem('sorgtimePosStateV3') || 'null');
+const LOCAL_STATE_KEY = 'sorgtimePosStateV3';
+const LOCAL_DIRTY_KEY = 'sorgtimePosStateDirtyV1';
+const localSaved = JSON.parse(localStorage.getItem(LOCAL_STATE_KEY) || 'null');
+// Tanda bahwa snapshot lokal belum berhasil diunggah ke Supabase. Selama
+// dirty, state lokal dipakai saat boot agar perubahan (mis. stok) tidak
+// tertimpa snapshot remote yang lebih lama.
+let localDirty = Boolean(localSaved) && cloud.enabled && localStorage.getItem(LOCAL_DIRTY_KEY) === '1';
 if (cloud.enabled) {
   const gate = document.getElementById('auth-content');
   if (gate && !gate.innerHTML.trim()) gate.innerHTML = '<div class="auth-form-wrap"><span class="auth-step">MENYAMBUNGKAN</span><h2>Memuat data outlet</h2><p>Mengambil data terbaru dari Supabase...</p></div>';
@@ -96,7 +102,7 @@ const remoteUsers = Array.isArray(cloudResult.users) && cloudResult.users.length
 const bootProfiles = (authBackendReady && bootSession) ? await cloud.loadProfiles() : { ok: false, users: [] };
 let cachedProfiles = [];
 try { const storedProfiles = JSON.parse(localStorage.getItem('sorgtimeAuthUsersV1') || '[]'); cachedProfiles = Array.isArray(storedProfiles) ? storedProfiles : []; } catch (error) { cachedProfiles = []; }
-const saved = remoteState || localSaved;
+const saved = (localDirty && localSaved ? localSaved : null) || remoteState || localSaved;
 const state = {
   cart: [], orders: [], selectedCustomer: null, promo: null,
   inventory: ingredients, customers, networkOnline: true, qrisImage: null, orderNo: 1,
@@ -162,7 +168,16 @@ let lastSyncedFingerprint = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const save = () => { localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state)); if (syncReady && !applyingRemote) cloud.save(state, syncUsers()); };
+const markLocalDirty = () => { localDirty = true; try { localStorage.setItem(LOCAL_DIRTY_KEY, '1'); } catch (error) { /* penyimpanan penuh */ } };
+const clearLocalDirty = () => { localDirty = false; try { localStorage.removeItem(LOCAL_DIRTY_KEY); } catch (error) { /* abaikan */ } };
+const writeLocalState = () => { try { localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(state)); } catch (error) { console.warn('Gagal menyimpan state lokal:', error); } };
+const save = () => {
+  writeLocalState();
+  if (syncReady && !applyingRemote) {
+    if (stateFingerprint() !== lastSyncedFingerprint) markLocalDirty();
+    cloud.save(state, syncUsers());
+  }
+};
 const nextOrderId = () => `A-${String(state.orderNo).padStart(3, '0')}`;
 const escapeHTML = value => String(value).replace(/[&<>'"]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 const orderRef = order => order.uid || order.id;
@@ -178,9 +193,9 @@ const ROLE_DESCRIPTIONS = {
   barista: 'Membuat pesanan, menerima pembayaran, dan mengelola antrean produksi.'
 };
 const ROLE_PERMISSIONS = {
-  sysadmin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
-  admin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
-  barista: ['pos','kds']
+  sysadmin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
+  admin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
+  barista: ['pos','kds','payslip']
 };
 let authUsers = authBackendReady
   ? (bootProfiles.ok ? bootProfiles.users : cachedProfiles)
@@ -196,7 +211,13 @@ const cacheProfiles = () => {
     : authUsers.map(({ id, name, username, role, status, createdAt }) => ({ id, name, username, role, status, createdAt }));
   localStorage.setItem(USERS_KEY, JSON.stringify(payload));
 };
-const saveUsers = () => { cacheProfiles(); if (syncReady) cloud.save(state, syncUsers()); };
+const saveUsers = () => {
+  cacheProfiles();
+  if (syncReady) {
+    if (stateFingerprint() !== lastSyncedFingerprint) markLocalDirty();
+    cloud.save(state, syncUsers());
+  }
+};
 if (authBackendReady) { cacheProfiles(); sessionStorage.removeItem('sorgtimeAuthSessionV1'); }
 const randomSalt = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('');
 async function hashPassword(password, salt) {
@@ -294,9 +315,16 @@ async function completeCloudLogin(profile) {
   const result = await cloud.load();
   if (result.authError) { await cloud.signOut(); currentUser = null; return renderAuthGate('Sesi berakhir. Silakan masuk lagi.'); }
   if (result.ok && result.state) {
-    hydrateRemoteState(result);
-    cloud.markSynced(state, syncUsers());
-    lastSyncedFingerprint = stateFingerprint();
+    if (localDirty) {
+      // Perubahan lokal belum terunggah. Pertahankan state lokal dan kirim
+      // ulang, jangan menimpa dengan snapshot remote yang lebih lama.
+      cloud.save(state, syncUsers());
+    } else {
+      hydrateRemoteState(result);
+      cloud.markSynced(state, syncUsers());
+      lastSyncedFingerprint = stateFingerprint();
+      clearLocalDirty();
+    }
     lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : 0;
   }
   unlockApp(profile);
@@ -980,6 +1008,147 @@ function renderReports() {
   const latestClosedShift = [...state.shifts].filter(shift => shift.endedAt).sort((a, b) => b.endedAt - a.endedAt)[0]; const missingCosts = data.purchases.filter(row => row.purchaseCost == null).length; $('#health-list').innerHTML = [['◷','Status shift',isShiftActive()?'Aktif':'Tutup'],['✓','Selisih shift terakhir',latestClosedShift ? rupiah(latestClosedShift.cashDifference || 0) : '—'],['♙','Sisa kewajiban gaji',rupiah(data.payrollRemainingTotal)],['!','Cup tanpa HPP',`${data.missingHppCups} cup`],['!','Belanja tanpa nominal',`${missingCosts} catatan`],['↺','Status sinkronisasi',state.networkOnline?'Tersinkron':'Antre offline']].map(row=>`<div class="health-row"><span class="health-label"><i>${row[0]}</i><span>${row[1]}</span></span><strong>${row[2]}</strong></div>`).join('');
 }
 
+function payslipMonth() {
+  const input = $('#payslip-month');
+  const fallback = jakartaDateKey().slice(0, 7);
+  if (!input) return fallback;
+  if (!input.value) input.value = fallback;
+  return input.value || fallback;
+}
+
+function payslipPeriod(month) {
+  const [year, monthNumber] = month.split('-').map(Number);
+  const daysInMonth = new Date(year, monthNumber, 0).getDate();
+  return { from: `${month}-01`, to: `${month}-${String(daysInMonth).padStart(2, '0')}` };
+}
+
+function payslipData(month = payslipMonth()) {
+  const { from, to } = payslipPeriod(month);
+  const keys = reportDateKeys(from, to);
+  const mine = reportPayroll(keys).find(row => row.id === currentUser?.id) || {
+    id: currentUser?.id || '', name: currentUser?.name || 'Karyawan', role: currentUser?.role || 'barista',
+    days: new Set(), cupsByDay: new Map(), workDays: 0, cups: 0, basePay: 0, bonus: 0, total: 0
+  };
+  const payments = state.payrollPayments
+    .filter(entry => entry.userId === mine.id && entry.periodFrom <= to && entry.periodTo >= from)
+    .sort((a, b) => String(b.paidDate || '').localeCompare(String(a.paidDate || '')) || Number(b.createdAt || 0) - Number(a.createdAt || 0));
+  const paid = payments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
+  const cupBonus = Number(state.payrollSettings.cupBonus || 0);
+  const days = keys.map(day => {
+    const cups = mine.cupsByDay.get(day) || 0;
+    return { day, cups, present: mine.days.has(day), basePay: mine.days.has(day) ? dailyBasePay(day) : 0, bonus: cups * cupBonus };
+  });
+  return { from, to, mine, payments, paid, total: mine.total, remaining: Math.max(0, mine.total - paid), overpaid: Math.max(0, paid - mine.total), cupBonus, days };
+}
+
+function payslipMonthLabel(from) {
+  return new Intl.DateTimeFormat('id-ID', { month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' }).format(dateFromKey(from));
+}
+
+function renderPayslip() {
+  const content = $('#payslip-content');
+  if (!content) return;
+  if (!currentUser) { content.innerHTML = ''; return; }
+  const data = payslipData();
+  const monthLabel = payslipMonthLabel(data.from);
+  const monthlyBase = Number(state.payrollSettings.monthlyBase || 0);
+  const monthlyOffDays = Number(state.payrollSettings.monthlyOffDays || 0);
+  const monthDays = new Date(Number(data.from.slice(0, 4)), Number(data.from.slice(5, 7)), 0).getDate();
+  const workDaysInMonth = Math.max(1, monthDays - monthlyOffDays);
+  const status = data.total <= 1 ? 'Belum ada hak gaji' : data.remaining <= 1 ? 'Lunas' : data.paid > 0 ? 'Dibayar sebagian' : 'Belum dibayar';
+  const dailyRows = data.days.filter(day => day.present || day.cups);
+  const metrics = [
+    ['◷', String(data.mine.workDays), 'Hari kerja', '#e7f1ed', '#397461'],
+    ['▣', String(data.mine.cups), 'Cup minuman', '#efe7de', '#775640'],
+    ['◎', rupiah(data.total), 'Total hak bulan ini', '#fbf3dd', '#9a6b10'],
+    ['✓', rupiah(data.remaining), 'Sisa belum dibayar', '#eee9f7', '#6c5b95']
+  ];
+  content.innerHTML = `
+    <div class="metric-grid">${metrics.map(([icon, value, label, tone, accent]) => `<div class="metric-card"><div class="metric-top"><span class="metric-icon" style="--tone:${tone};--accent:${accent}">${icon}</span><span class="metric-delta">${escapeHTML(monthLabel)}</span></div><h3>${value}</h3><p>${label}</p></div>`).join('')}</div>
+    <div class="payslip-shell">
+      <div class="payslip-card">
+        <div class="payslip-head">
+          <div class="payslip-brand">SORGTIME<small>POINT OF SALE</small></div>
+          <div class="payslip-period"><strong>Slip gaji ${escapeHTML(monthLabel)}</strong><span>Periode ${data.from} s.d. ${data.to}</span></div>
+          <div class="payslip-id"><strong>${escapeHTML(data.mine.name)}</strong><span>${escapeHTML(ROLE_LABELS[data.mine.role] || data.mine.role)} · @${escapeHTML(currentUser.username)}</span></div>
+        </div>
+        <div class="payslip-lines">
+          <div class="payslip-line section"><span>Rincian penghasilan</span><span></span></div>
+          <div class="payslip-line"><span>Gaji pokok (${data.mine.workDays} hari kerja)</span><strong>${rupiah(data.mine.basePay)}</strong></div>
+          <div class="payslip-line"><span>Bonus cup (${data.mine.cups} cup × ${rupiah(data.cupBonus)})</span><strong>${rupiah(data.mine.bonus)}</strong></div>
+          <div class="payslip-line total"><span>Total hak</span><strong>${rupiah(data.total)}</strong></div>
+          <div class="payslip-line section" style="margin-top:12px"><span>Pembayaran · ${escapeHTML(status)}</span><span></span></div>
+          <div class="payslip-line paid"><span>Sudah dibayar</span><strong>${rupiah(data.paid)}</strong></div>
+          <div class="payslip-line remaining ${data.overpaid ? 'overpaid' : ''}"><span>${data.overpaid ? 'Kelebihan bayar' : 'Sisa hak'}</span><strong>${rupiah(data.overpaid || data.remaining)}</strong></div>
+        </div>
+        <div class="payslip-note">Gaji pokok ${rupiah(monthlyBase)} per bulan dibagi ${workDaysInMonth} hari kerja (${monthlyOffDays} hari libur). Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. Kehadiran diambil otomatis dari shift atau transaksi.</div>
+      </div>
+      <div class="payslip-side">
+        <div class="content-card">
+          <div class="card-header"><div><h3>Riwayat pembayaran</h3><p>Pembayaran untuk periode ini</p></div><strong class="history-total">${rupiah(data.paid)}</strong></div>
+          <div class="table-wrap"><table class="payslip-day-table"><thead><tr><th>Tanggal</th><th>Nominal</th><th>Metode</th><th>Catatan</th></tr></thead><tbody>${data.payments.length ? data.payments.map(entry => `<tr><td>${escapeHTML(entry.paidDate || '—')}</td><td><strong>${rupiah(entry.amount)}</strong></td><td>${escapeHTML(entry.method || '—')}</td><td>${escapeHTML(entry.note || '—')}</td></tr>`).join('') : '<tr><td colspan="4"><div class="empty-table"><strong>Belum ada pembayaran</strong><span>Pembayaran akan muncul setelah dicatat sysadmin.</span></div></td></tr>'}</tbody></table></div>
+        </div>
+        <div class="content-card">
+          <div class="card-header"><div><h3>Rincian harian</h3><p>Kehadiran dan bonus per tanggal</p></div></div>
+          <div class="table-wrap"><table class="payslip-day-table"><thead><tr><th>Tanggal</th><th>Status</th><th>Cup</th><th>Gaji pokok</th><th>Bonus</th></tr></thead><tbody>${dailyRows.length ? dailyRows.map(day => `<tr><td>${new Intl.DateTimeFormat('id-ID', { weekday: 'short', day: '2-digit', month: 'short', timeZone: 'Asia/Jakarta' }).format(dateFromKey(day.day))}</td><td><span class="payroll-status ${day.present ? 'paid' : 'unpaid'}">${day.present ? 'Hadir' : 'Tanpa shift'}</span></td><td>${day.cups}</td><td>${rupiah(day.basePay)}</td><td>${rupiah(day.bonus)}</td></tr>`).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada aktivitas</strong><span>Buka shift atau buat transaksi untuk mencatat kehadiran bulan ini.</span></div></td></tr>'}</tbody></table></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function payslipPrintHTML(data, monthLabel) {
+  const rows = [
+    ['Gaji pokok', `${data.mine.workDays} hari kerja`, data.mine.basePay],
+    ['Bonus cup', `${data.mine.cups} cup × ${rupiah(data.cupBonus)}`, data.mine.bonus]
+  ];
+  return `<!doctype html><html lang="id"><head><meta charset="utf-8"><title>Slip gaji ${escapeHTML(data.mine.name)} ${escapeHTML(monthLabel)}</title><style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 36px; color: #211e1e; font-family: Georgia, "Times New Roman", serif; }
+    .slip { max-width: 680px; margin: 0 auto; border: 1px solid #211e1e; padding: 28px; }
+    .head { display: flex; justify-content: space-between; gap: 20px; border-bottom: 1px dashed #211e1e; padding-bottom: 18px; }
+    .brand { font-size: 22px; letter-spacing: .08em; }
+    .brand small { display: block; font-size: 9px; letter-spacing: .22em; color: #6e655b; margin-top: 4px; }
+    .period { text-align: right; }
+    .period strong { display: block; font-size: 15px; }
+    .period span, .meta span { display: block; color: #6e655b; font-size: 11px; margin-top: 3px; }
+    .meta { margin-top: 18px; }
+    .meta strong { font-size: 15px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 12px; }
+    th, td { text-align: left; padding: 8px 4px; border-bottom: 1px dotted #b9b0a6; }
+    th { font-size: 9px; text-transform: uppercase; letter-spacing: .1em; color: #6e655b; }
+    td.num, th.num { text-align: right; }
+    .total td { border-top: 1px solid #211e1e; border-bottom: 1px solid #211e1e; font-weight: bold; }
+    .remaining td { font-weight: bold; font-size: 14px; }
+    .note { margin-top: 20px; padding-top: 14px; border-top: 1px dashed #211e1e; color: #6e655b; font-size: 10px; line-height: 1.6; }
+    .sign { display: flex; justify-content: space-between; margin-top: 48px; font-size: 11px; }
+    .sign div { width: 40%; text-align: center; }
+    .sign span { display: block; margin-top: 46px; border-top: 1px solid #211e1e; padding-top: 6px; }
+  </style></head><body><div class="slip">
+    <div class="head"><div class="brand">SORGTIME<small>POINT OF SALE</small></div><div class="period"><strong>Slip gaji ${escapeHTML(monthLabel)}</strong><span>Periode ${data.from} s.d. ${data.to}</span></div></div>
+    <div class="meta"><strong>${escapeHTML(data.mine.name)}</strong><span>${escapeHTML(ROLE_LABELS[data.mine.role] || data.mine.role)} · @${escapeHTML(currentUser.username)}</span></div>
+    <table><thead><tr><th>Komponen</th><th>Keterangan</th><th class="num">Nominal</th></tr></thead><tbody>
+      ${rows.map(([label, note, value]) => `<tr><td>${escapeHTML(label)}</td><td>${escapeHTML(note)}</td><td class="num">${rupiah(value)}</td></tr>`).join('')}
+      <tr class="total"><td colspan="2">Total hak</td><td class="num">${rupiah(data.total)}</td></tr>
+      <tr><td colspan="2">Sudah dibayar</td><td class="num">${rupiah(data.paid)}</td></tr>
+      <tr class="remaining"><td colspan="2">${data.overpaid ? 'Kelebihan bayar' : 'Sisa hak'}</td><td class="num">${rupiah(data.overpaid || data.remaining)}</td></tr>
+    </tbody></table>
+    <div class="note">Gaji pokok dihitung dari kehadiran (shift/transaksi). Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. Slip ini dihasilkan otomatis oleh Sorgtime POS${data.payments.length ? ` dan mencakup ${data.payments.length} pembayaran.` : '.'}</div>
+    <div class="sign"><div><span>Karyawan</span></div><div><span>Pengelola</span></div></div>
+  </div></body></html>`;
+}
+
+function printPayslip() {
+  if (!currentUser) return;
+  const data = payslipData();
+  const monthLabel = payslipMonthLabel(data.from);
+  const win = window.open('', '_blank', 'width=760,height=920');
+  if (!win) return toast('Izinkan pop-up untuk mencetak slip gaji', '!');
+  win.document.write(payslipPrintHTML(data, monthLabel));
+  win.document.close();
+  win.focus();
+  setTimeout(() => { try { win.print(); } catch (error) { /* biarkan pengguna mencetak manual */ } }, 400);
+}
+
 function setReportPreset(preset) {
   const today = jakartaDateKey(); let from = today; let to = today;
   if (preset === 'yesterday') from = to = shiftDateKey(today, -1);
@@ -1125,17 +1294,17 @@ function showShiftManager() {
   });
 }
 
-function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderCustomers(); renderTransactions(); renderReports(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
+function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderCustomers(); renderTransactions(); renderReports(); renderPayslip(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
 
 const todayLabel = new Intl.DateTimeFormat('id-ID',{weekday:'long',day:'numeric',month:'long',timeZone:'Asia/Jakarta'}).format(new Date());
-const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], customers:['Pelanggan','LOYALTY'], transactions:['Riwayat','TRANSAKSI & NOTA'], reports:['Laporan','PERFORMA OUTLET'], accounts:['Akun','PENGGUNA & PERAN'] };
+const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], customers:['Pelanggan','LOYALTY'], transactions:['Riwayat','TRANSAKSI & NOTA'], reports:['Laporan','PERFORMA OUTLET'], payslip:['Slip Gaji','GAJI KARYAWAN'], accounts:['Akun','PENGGUNA & PERAN'] };
 function switchView(view) {
   if (!canAccess(view)) return toast('Anda tidak memiliki akses ke halaman tersebut','!');
   $$('.view').forEach(v=>v.classList.toggle('active', v.id===`view-${view}`));
   $$('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===view));
   $('#page-title').textContent = pageMeta[view][0]; $('#page-eyebrow').textContent = pageMeta[view][1];
   $('.sidebar').classList.remove('open');
-  if (view==='kds') renderKDS(); if (view==='transactions') renderTransactions(); if (view==='reports') renderReports(); if (view==='accounts') renderAccounts();
+  if (view==='kds') renderKDS(); if (view==='transactions') renderTransactions(); if (view==='reports') renderReports(); if (view==='payslip') renderPayslip(); if (view==='accounts') renderAccounts();
 }
 
 function updateNetworkUI() {
@@ -1355,6 +1524,8 @@ $('#attendance-manage').addEventListener('click', showAttendanceManager);
 $('#payroll-payment').addEventListener('click', showPayrollPayment);
 $('#payroll-settings').addEventListener('click', showPayrollSettings);
 $('#report-add-expense').addEventListener('click', () => showStockForm());
+$('#payslip-month').addEventListener('change', renderPayslip);
+$('#payslip-print').addEventListener('click', printPayslip);
 $$('[data-report-preset]').forEach(button => button.addEventListener('click', () => setReportPreset(button.dataset.reportPreset)));
 ['report-date-from','report-date-to','report-cashier','report-payment'].forEach(id => $(`#${id}`).addEventListener('change', () => { if (id.startsWith('report-date')) $$('[data-report-preset]').forEach(button => button.classList.remove('active')); renderReports(); }));
 $('#reset-report-filter').addEventListener('click', () => { $('#report-cashier').value = ''; $('#report-payment').value = ''; setReportPreset('today'); });
@@ -1364,8 +1535,9 @@ $('#shift-button').addEventListener('click', showShiftManager);
 $('#start-shift-inline').addEventListener('click', showShiftManager);
 $('#profile-button').addEventListener('click', () => {
   if (!currentUser) return;
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Profil pengguna</h2><p>Akun yang sedang aktif</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="profile-detail"><span class="person-avatar">${currentUser.name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()}</span><div><strong>${escapeHTML(currentUser.name)}</strong><small>@${escapeHTML(currentUser.username)} · ${ROLE_LABELS[currentUser.role]}</small></div></div><div class="notice">${ROLE_DESCRIPTIONS[currentUser.role]}</div></div><div class="modal-footer">${authBackendReady ? '<button class="button-ghost" id="change-password-button">Ubah password</button>' : ''}<button class="button-ghost modal-close">Kembali</button><button class="button-primary" id="logout-button">Keluar dari aplikasi</button></div>`);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Profil pengguna</h2><p>Akun yang sedang aktif</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="profile-detail"><span class="person-avatar">${currentUser.name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()}</span><div><strong>${escapeHTML(currentUser.name)}</strong><small>@${escapeHTML(currentUser.username)} · ${ROLE_LABELS[currentUser.role]}</small></div></div><div class="notice">${ROLE_DESCRIPTIONS[currentUser.role]}</div></div><div class="modal-footer">${authBackendReady ? '<button class="button-ghost" id="change-password-button">Ubah password</button>' : ''}<button class="button-ghost" id="profile-payslip-button">Slip gaji</button><button class="button-ghost modal-close">Kembali</button><button class="button-primary" id="logout-button">Keluar dari aplikasi</button></div>`);
   $('#logout-button').addEventListener('click', logout);
+  $('#profile-payslip-button').addEventListener('click', () => { closeModal(); switchView('payslip'); });
   if (authBackendReady) $('#change-password-button').addEventListener('click', showChangePassword);
 });
 
@@ -1405,7 +1577,16 @@ function hydrateRemoteState(result) {
   state.orders ||= [];
   state.cart ||= [];
   state.networkOnline ??= true;
-  localStorage.setItem('sorgtimePosStateV3', JSON.stringify(state));
+  state.promotions ||= [];
+  state.inventoryMovements ||= [];
+  state.customers ||= customers;
+  state.recipes ||= [];
+  state.shifts ||= [];
+  state.attendance ||= [];
+  state.payrollPayments ||= [];
+  state.payrollSettings ||= { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000 };
+  writeLocalState();
+  clearLocalDirty();
 }
 
 function applyRemoteResult(result) {
@@ -1431,6 +1612,7 @@ function applyRemoteResult(result) {
 
 function maybeApplyRemote(result) {
   if (!cloud.enabled || !syncReady || !result || !result.ok || !result.state) return;
+  if (localDirty) return;
   if (cloud.fingerprint(result.state, syncUsers()) === lastSyncedFingerprint) {
     lastRemoteAt = Math.max(lastRemoteAt, result.updatedAt ? Date.parse(result.updatedAt) : Date.now());
     return;
@@ -1480,7 +1662,12 @@ async function refreshProfiles() {
 }
 
 async function pullRemote() {
-  if (!cloud.enabled || !syncReady || syncingRemote || cloud.hasPending()) return;
+  if (!cloud.enabled || !syncReady || syncingRemote) return;
+  if (localDirty) {
+    if (!cloud.hasPending() && navigator.onLine !== false) cloud.save(state, syncUsers());
+    return;
+  }
+  if (cloud.hasPending()) return;
   if (pendingRemote && !hasBlockingOverlay()) maybeApplyRemote(pendingRemote);
   syncingRemote = true;
   try {
@@ -1504,8 +1691,10 @@ function startCloudSync() {
   window.addEventListener('pos:cloud-saved', event => {
     if (event.detail && event.detail.fingerprint) lastSyncedFingerprint = event.detail.fingerprint;
     lastRemoteAt = Math.max(lastRemoteAt, Date.now());
+    if (!event.detail || !event.detail.fingerprint || event.detail.fingerprint === stateFingerprint()) clearLocalDirty();
   });
-  window.addEventListener('pos:cloud-error', () => { if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
+  window.addEventListener('pos:cloud-error', () => { markLocalDirty(); if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
+  window.addEventListener('online', pullRemote);
   window.addEventListener('focus', pullRemote);
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullRemote(); });
   setInterval(pullRemote, 20000);
@@ -1515,13 +1704,13 @@ function startCloudSync() {
 renderAll();
 await initializeAuth();
 
-if (legacyMode && cloudResult.ok && remoteState) {
+if (legacyMode && cloudResult.ok && remoteState && !localDirty) {
   cloud.markSynced(state, syncUsers());
   lastSyncedFingerprint = stateFingerprint();
+  clearLocalDirty();
 }
-if (legacyMode && cloudResult.ok && (!remoteState || !remoteUsers)) {
+if (legacyMode && cloudResult.ok && (!remoteState || !remoteUsers || localDirty)) {
   cloud.save(state, authUsers);
-  lastSyncedFingerprint = stateFingerprint();
 }
 
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

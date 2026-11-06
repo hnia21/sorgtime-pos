@@ -18,6 +18,10 @@ Halaman **Laporan** menyediakan filter tanggal, karyawan, dan metode pembayaran;
 
 Pembayaran gaji menampilkan seluruh akun karyawan aktif, termasuk yang belum memiliki absensi atau transaksi. Pilihan **Semua karyawan** menyediakan rincian nominal per orang yang dapat disunting dan total gabungan otomatis. Nominal Rp0 dilewati; pembayaran dicatat terpisah untuk setiap penerima dengan nominal positif. Tanpa kehadiran, hak gaji otomatis tetap Rp0, tetapi sysadmin dapat memasukkan pembayaran secara manual.
 
+Halaman **Slip Gaji** tersedia untuk sysadmin, admin, dan barista. Setiap pengguna melihat slip gajinya sendiri per bulan: hari kerja, jumlah cup, gaji pokok, bonus cup, total hak, pembayaran yang sudah diterima, dan sisa kewajiban. Rincian harian serta riwayat pembayaran ditampilkan di halaman yang sama, dan tombol **Cetak / PDF** menghasilkan slip siap cetak. Data dihitung dari kehadiran shift/transaksi milik pengguna yang sedang masuk, sehingga barista tidak dapat melihat slip karyawan lain.
+
+Perubahan lokal (termasuk penyesuaian stok) ditandai sebagai *belum tersinkron* sampai berhasil diunggah ke Supabase. Jika unggahan gagal atau perangkat ditutup sebelum sinkronisasi selesai, snapshot lokal dipakai saat aplikasi dibuka kembali dan dikirim ulang, sehingga tidak tertimpa data remote yang lebih lama.
+
 Pada pembukaan pertama, aplikasi meminta pembuatan akun `sysadmin`. Sysadmin memiliki akses penuh dan dapat membuat akun admin/barista; admin mengelola operasional dan akun barista; barista dapat membuat pesanan, menerima pembayaran, membuka/menutup shift, dan mengelola KDS. Barista tetap tidak dapat mengubah harga menu, promo, inventori, laporan, atau akun. Tidak tersedia akun atau password bawaan.
 
 Setelah migrasi `202401010009_per_user_auth_rls.sql` dijalankan, akun diverifikasi oleh **Supabase Auth** (username dipetakan ke `${username}@sorgtime.local`) dan seluruh data dilindungi RLS. Akun lama yang hanya tersimpan lokal tidak dapat dipakai lagi; buat ulang akun melalui layar awal. Setiap pengguna dapat mengganti password sendiri dari **Profil → Ubah password**.
