@@ -175,12 +175,12 @@ const ROLE_LABELS = { sysadmin: 'Sysadmin', admin: 'Admin', barista: 'Barista' }
 const ROLE_DESCRIPTIONS = {
   sysadmin: 'Akses penuh, pengaturan sistem, dan seluruh akun.',
   admin: 'Kasir, operasional, laporan, dan akun barista.',
-  barista: 'Khusus antrean produksi dan status pesanan.'
+  barista: 'Membuat pesanan, menerima pembayaran, dan mengelola antrean produksi.'
 };
 const ROLE_PERMISSIONS = {
   sysadmin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
   admin: ['pos','kds','inventory','customers','transactions','reports','accounts'],
-  barista: ['kds']
+  barista: ['pos','kds']
 };
 let authUsers = authBackendReady
   ? (bootProfiles.ok ? bootProfiles.users : cachedProfiles)
@@ -308,7 +308,7 @@ function applyPermissions() {
   $('#profile-name').textContent = currentUser.name;
   $('#profile-role').textContent = `${ROLE_LABELS[currentUser.role]} · Shift ${isShiftActive() ? 'aktif' : 'tutup'}`;
   $('.profile-card .avatar').textContent = currentUser.name.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase();
-  $('#shift-button').hidden = currentUser.role === 'barista';
+  $('#shift-button').hidden = !canAccess('pos');
   $('#account-add').hidden = !['sysadmin','admin'].includes(currentUser.role);
   $('#manage-prices').hidden = !['sysadmin','admin'].includes(currentUser.role);
   $('#attendance-manage').hidden = !isSysadmin();
@@ -1041,7 +1041,7 @@ function shiftHistoryHTML() {
   return `<div class="shift-history-list">${recent.map(shift => { const summary = shiftSummary(shift); return `<div><span><strong>${transactionDateTime(shift.startedAt)}</strong><small>${escapeHTML(shift.startedBy || '—')} · ${shift.endedAt ? shiftDuration(shift) : 'Sedang aktif'}</small></span><span><strong>${summary.orders.length} trx · ${rupiah(summary.revenue)}</strong><small>${shift.endedAt ? `Selisih ${rupiah(shift.cashDifference || 0)}` : 'Belum ditutup'}</small></span></div>`; }).join('')}</div>`;
 }
 function showShiftManager() {
-  if (!canManageSales()) return toast('Hanya sysadmin atau admin yang dapat mengelola shift', '!');
+  if (!canAccess('pos')) return toast('Anda tidak memiliki akses untuk mengelola shift', '!');
   const shift = activeShift();
   if (!shift) {
     openModal(`<div class="modal-header"><div><h2 id="modal-title">Mulai shift baru</h2><p>Nomor antrean akan dimulai kembali dari A-001</p></div><button class="modal-close">×</button></div><form id="start-shift-form"><div class="modal-body"><div class="payment-total-box"><span>KAS AWAL</span><strong id="opening-cash-preview">${rupiah(0)}</strong></div><div class="field"><label>Nominal kas awal</label><input name="openingCash" id="opening-cash" type="number" min="0" step="1000" value="0" required autofocus></div><div class="notice">Transaksi hanya dapat dibuat saat shift aktif. Membuka shift akan mengosongkan keranjang lama dan mereset nomor pesanan ke A-001.</div><h3 class="shift-history-title">Riwayat shift terakhir</h3>${shiftHistoryHTML()}</div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Mulai shift</button></div></form>`, true);
