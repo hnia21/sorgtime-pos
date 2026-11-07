@@ -401,6 +401,30 @@ function openModal(html, wide = false) {
 }
 function closeModal() { $('#modal-backdrop').hidden = true; $('#modal').innerHTML = ''; if (pendingRemote && !state.cart.length) maybeApplyRemote(pendingRemote); }
 
+let confirmResolve = null;
+function closeConfirm(result) {
+  const backdrop = $('#confirm-backdrop');
+  if (backdrop) backdrop.hidden = true;
+  const resolve = confirmResolve; confirmResolve = null;
+  if (resolve) resolve(result);
+}
+function confirmDialog(message, options = {}) {
+  const backdrop = $('#confirm-backdrop');
+  if (!backdrop) return Promise.resolve(typeof window.confirm === 'function' ? window.confirm(message) : false);
+  if (confirmResolve) { const previous = confirmResolve; confirmResolve = null; previous(false); }
+  const { title = 'Konfirmasi', confirmLabel = 'Ya, lanjutkan', cancelLabel = 'Batal', tone = 'danger', icon = '!' } = options;
+  $('#confirm-title').textContent = title;
+  $('#confirm-message').textContent = message;
+  $('#confirm-icon').textContent = icon;
+  $('#confirm-cancel').textContent = cancelLabel;
+  const ok = $('#confirm-ok');
+  ok.textContent = confirmLabel;
+  $('#confirm-dialog').classList.toggle('danger', tone === 'danger');
+  backdrop.hidden = false;
+  setTimeout(() => ok.focus(), 20);
+  return new Promise(resolve => { confirmResolve = resolve; });
+}
+
 function productVisual(product, compact = false) {
   return `<div class="product-art ${product.type === 'retail' ? 'retail-art' : ''}"><img src="${escapeHTML(product.image)}" alt="${escapeHTML(product.name)}" loading="lazy"></div>`;
 }
@@ -559,9 +583,10 @@ function showAddOnPriceManager(product) {
   $('#back-to-modifier').addEventListener('click', () => showModifier(product));
   $('#add-addon').addEventListener('click', () => showAddOnForm(product));
   $$('[data-addon-edit]', $('#modal')).forEach(button => button.addEventListener('click', () => showAddOnForm(product, button.dataset.addonEdit)));
-  $$('[data-addon-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => {
+  $$('[data-addon-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
     const index = addOns.findIndex(item => String(item.id) === button.dataset.addonDelete);
-    if (index < 0 || !confirm(`Hapus tambahan ${addOns[index].name}?`)) return;
+    if (index < 0) return;
+    if (!await confirmDialog(`Hapus tambahan ${addOns[index].name}?`, { title: 'Hapus item tambahan', confirmLabel: 'Hapus' })) return;
     addOns.splice(index, 1); save(); showAddOnPriceManager(product); toast('Item tambahan dihapus');
   }));
 }
@@ -584,11 +609,11 @@ function showPriceManager() {
   openModal(`<div class="modal-header"><div><h2 id="modal-title">Kelola menu</h2><p>Tambah menu baru beserta foto, harga, kategori, dan ketersediaannya</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="catalog-manager-list">${rows || '<div class="empty-inline"><strong>Menu masih kosong</strong><span>Tambahkan produk pertama ke katalog kasir.</span></div>'}</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Kembali</button><button type="button" class="button-primary" id="add-menu">＋ Tambah menu</button></div>`, true);
   $('#add-menu').addEventListener('click', () => showMenuForm());
   $$('[data-menu-edit]', $('#modal')).forEach(button => button.addEventListener('click', () => showMenuForm(button.dataset.menuEdit)));
-  $$('[data-menu-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => {
+  $$('[data-menu-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
     const index = products.findIndex(item => String(item.id) === button.dataset.menuDelete);
     if (index < 0) return;
     if (state.cart.some(item => String(item.productId) === String(products[index].id))) return toast('Hapus item dari keranjang sebelum menghapus menu', '!');
-    if (!confirm(`Hapus menu ${products[index].name}?`)) return;
+    if (!await confirmDialog(`Hapus menu ${products[index].name}?`, { title: 'Hapus menu', confirmLabel: 'Hapus' })) return;
     products.splice(index, 1); save(); renderCategories(); renderProducts(); showPriceManager(); toast('Menu berhasil dihapus');
   }));
 }
@@ -646,9 +671,10 @@ function showPromotionManager() {
     state.promo = button.dataset.promoApply; save(); closeModal(); renderCart(); toast('Potongan diterapkan', '◇');
   }));
   $$('[data-promo-edit]', $('#modal')).forEach(button => button.addEventListener('click', () => showPromotionForm(button.dataset.promoEdit)));
-  $$('[data-promo-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => {
+  $$('[data-promo-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
     const promo = state.promotions.find(item => item.id === button.dataset.promoDelete);
-    if (!promo || !confirm(`Hapus ${promo.name}?`)) return;
+    if (!promo) return;
+    if (!await confirmDialog(`Hapus ${promo.name}?`, { title: 'Hapus promo', confirmLabel: 'Hapus' })) return;
     state.promotions = state.promotions.filter(item => item.id !== promo.id);
     if (state.promo === promo.id) state.promo = null;
     save(); renderCart(); showPromotionManager(); toast('Promo atau voucher dihapus');
@@ -1318,7 +1344,10 @@ function showAttendanceManager() {
     save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Hari kerja ditambahkan', '◷');
   }));
   $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const status = form.get('status'); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status, note: form.get('note').trim(), source: 'admin', updatedAt: Date.now(), updatedBy: currentUser.id }; if (status !== 'present') { entry.checkInAt = null; entry.location = null; } if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
-  $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => { if (!confirm('Hapus data kehadiran ini?')) return; state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); }));
+  $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
+    if (!await confirmDialog('Hapus data kehadiran ini?', { title: 'Hapus kehadiran', confirmLabel: 'Hapus' })) return;
+    state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager();
+  }));
 }
 
 function attendanceEntryFor(userId, date) {
@@ -1475,8 +1504,9 @@ function showPayrollPayment() {
     save(); closeModal(); renderReports();
     toast(`Pembayaran ${payments.length} karyawan senilai ${rupiah(payments.reduce((sum, entry) => sum + entry.amount, 0))} dicatat`, '✓');
   });
-  $$('[data-payroll-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => {
-    if (!isSysadmin() || !confirm('Hapus catatan pembayaran ini?')) return;
+  $$('[data-payroll-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
+    if (!isSysadmin()) return;
+    if (!await confirmDialog('Hapus catatan pembayaran ini?', { title: 'Hapus pembayaran', confirmLabel: 'Hapus' })) return;
     state.payrollPayments = state.payrollPayments.filter(entry => entry.id !== button.dataset.payrollDelete);
     save(); closeModal(); renderReports(); showPayrollPayment();
   }));
@@ -1717,8 +1747,8 @@ function showInventoryItemForm(item = null) {
     if (item) Object.assign(item, entry); else state.inventory.push(entry);
     save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Item inventori berhasil disimpan', '◇');
   });
-  $('#delete-inventory-item')?.addEventListener('click', () => {
-    if (!confirm(`Hapus item ${item.name}? Riwayat transaksi tidak ikut terhapus.`)) return;
+  $('#delete-inventory-item')?.addEventListener('click', async () => {
+    if (!await confirmDialog(`Hapus item ${item.name}? Riwayat transaksi tidak ikut terhapus.`, { title: 'Hapus item inventori', confirmLabel: 'Hapus' })) return;
     const index = state.inventory.findIndex(existing => String(existing.id) === String(item.id)); if (index >= 0) state.inventory.splice(index, 1);
     state.recipes.forEach(recipe => recipe.components.forEach(component => { if (String(component.ingredientId) === String(item.id)) { component.ingredientId = null; component.trackStock = false; } }));
     save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Item inventori dihapus');
@@ -1760,7 +1790,7 @@ function showRecipeEditor(productId) {
   $('#recipe-components').addEventListener('click', event => { const remove = event.target.closest('.recipe-remove'); if (remove) { remove.closest('[data-recipe-component]').remove(); calculateLive(); } });
   $('#add-recipe-component').addEventListener('click', () => { $('#recipe-components').insertAdjacentHTML('beforeend', recipeComponentRow()); calculateLive(); });
   $('#back-hpp')?.addEventListener('click', showHppManager);
-  $('#delete-recipe')?.addEventListener('click', () => { if (!confirm(`Hapus resep ${product.name}? Stok tidak akan berkurang saat menu ini terjual.`)) return; state.recipes = state.recipes.filter(item => item !== recipe); save(); renderInventory(); showHppManager(); toast('Resep berhasil dihapus'); });
+  $('#delete-recipe')?.addEventListener('click', async () => { if (!await confirmDialog(`Hapus resep ${product.name}? Stok tidak akan berkurang saat menu ini terjual.`, { title: 'Hapus resep', confirmLabel: 'Hapus' })) return; state.recipes = state.recipes.filter(item => item !== recipe); save(); renderInventory(); showHppManager(); toast('Resep berhasil dihapus'); });
   $('#recipe-form').addEventListener('submit', event => {
     event.preventDefault(); const rows = $$('[data-recipe-component]', $('#modal'));
     if (!rows.length) return toast('Resep harus memiliki minimal satu komponen', '!');
@@ -1807,7 +1837,7 @@ document.addEventListener('click', async e => {
     const shift = state.shifts.find(item => item.id === shiftDelete.dataset.shiftDelete);
     if (!shift) return;
     if (!shift.endedAt) return toast('Tutup shift sebelum menghapus riwayatnya', '!');
-    if (!confirm('Hapus data riwayat shift ini? Transaksi yang tercatat tetap tersimpan.')) return;
+    if (!await confirmDialog('Hapus data riwayat shift ini? Transaksi yang tercatat tetap tersimpan.', { title: 'Hapus riwayat shift', confirmLabel: 'Hapus' })) return;
     state.shifts = state.shifts.filter(item => item.id !== shift.id);
     if (state.activeShiftId === shift.id) state.activeShiftId = null;
     save(); closeModal(); renderAll(); toast('Riwayat shift dihapus', '⌫');
@@ -1834,7 +1864,8 @@ document.addEventListener('click', async e => {
   const accountDelete = e.target.closest('[data-account-delete]');
   if (accountDelete) {
     const user = authUsers.find(item => item.id === accountDelete.dataset.accountDelete);
-    if (user && canManageUser(user) && confirm(`Hapus akun ${user.name}?`)) {
+    if (user && canManageUser(user)) {
+      if (!await confirmDialog(`Hapus akun ${user.name}?`, { title: 'Hapus akun', confirmLabel: 'Hapus akun' })) return;
       if (authBackendReady) {
         const result = await cloud.deleteAuthUser(user.id);
         if (!result.ok) return toast(result.message, '!');
@@ -1906,9 +1937,13 @@ function showChangePassword() {
     closeModal(); toast('Password berhasil diperbarui', '✓');
   });
 }
-$('#cart-more').addEventListener('click', ()=>{ if(!state.cart.length) return toast('Belum ada item untuk dibatalkan','!'); if(confirm('Kosongkan seluruh keranjang?')){state.cart=[];renderCart();toast('Keranjang dikosongkan');} });
+$('#cart-more').addEventListener('click', async ()=>{ if(!state.cart.length) return toast('Belum ada item untuk dibatalkan','!'); if(!await confirmDialog('Kosongkan seluruh keranjang?', { title: 'Kosongkan keranjang', confirmLabel: 'Kosongkan', icon: '◇' })) return; state.cart=[];renderCart();toast('Keranjang dikosongkan'); });
 
-document.addEventListener('keydown', e=>{ if(e.key==='F2'){e.preventDefault(); if(state.cart.length)showPayment(); else if(!isShiftActive())showShiftManager();} if(e.key==='F4'){e.preventDefault(); if(isShiftActive())showCustomerPicker(); else showShiftManager();} if(e.key==='Escape')closeModal(); });
+$('#confirm-ok').addEventListener('click', () => closeConfirm(true));
+$('#confirm-cancel').addEventListener('click', () => closeConfirm(false));
+$('#confirm-backdrop').addEventListener('click', event => { if (event.target === event.currentTarget) closeConfirm(false); });
+
+document.addEventListener('keydown', e=>{ if(e.key==='F2'){e.preventDefault(); if(state.cart.length)showPayment(); else if(!isShiftActive())showShiftManager();} if(e.key==='F4'){e.preventDefault(); if(isShiftActive())showCustomerPicker(); else showShiftManager();} if(e.key==='Escape'){ if(!$('#confirm-backdrop').hidden){ e.preventDefault(); closeConfirm(false); } else { closeModal(); } } });
 setInterval(()=>{ if($('#view-kds').classList.contains('active')) renderKDS(); }, 1000);
 setInterval(renderShiftState, 1000);
 
