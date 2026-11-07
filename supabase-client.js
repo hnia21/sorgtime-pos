@@ -343,6 +343,33 @@ export async function updateProfile(id, patch) {
   }
 }
 
+// Mengubah nama/peran/status sekaligus mereset password akun non-sysadmin.
+// Membutuhkan fungsi RPC admin_manage_account dari migrasi 010.
+export async function adminManageAccount(id, patch = {}) {
+  const db = getClient();
+  if (!db) return { ok: false, message: 'Supabase belum dikonfigurasi.' };
+  try {
+    const { data, error } = await withTimeout(
+      db.rpc('admin_manage_account', {
+        target: id,
+        new_name: patch.name ?? null,
+        new_role: patch.role ?? null,
+        new_status: patch.status ?? null,
+        new_password: patch.password ?? null
+      }),
+      10000
+    );
+    if (error) throw error;
+    return { ok: true, profile: normalizeProfile(data) };
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/could not find the function|schema cache|function .* does not exist/i.test(message)) {
+      return { ok: false, message: 'Fitur edit akun belum aktif. Jalankan migrasi 202401010010_admin_manage_accounts.sql di Supabase.', error };
+    }
+    return { ok: false, message: profileErrorMessage(error), error };
+  }
+}
+
 export async function deleteProfile(id) {
   const db = getClient();
   if (!db) return { ok: false, message: 'Supabase belum dikonfigurasi.' };
@@ -517,6 +544,7 @@ export const cloud = {
   loadProfiles,
   saveProfile,
   updateProfile,
+  adminManageAccount,
   deleteProfile,
   deleteAuthUser,
   usernameToEmail,
