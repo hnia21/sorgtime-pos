@@ -269,6 +269,7 @@ td small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 #view-transactions table { min-width: 1050px; }
 .payment-chip { display: inline-flex; padding: 5px 7px; border: 1px solid var(--ink); background: var(--yellow-soft); font-size: 8px; font-weight: 800; }
 .history-actions { display: flex; gap: 5px; }
+.history-actions .danger-action { color: var(--danger); }
 .history-actions button { height: 29px; border: 1px solid var(--ink); background: var(--paper); padding: 0 8px; cursor: pointer; font-size: 8px; font-weight: 800; }
 .transaction-detail-head { margin-bottom: 14px; display: grid; grid-template-columns: repeat(4,1fr); border: 1px solid var(--ink); }
 .transaction-detail-head > div { min-width: 0; padding: 11px; border-right: 1px solid var(--ink); }
@@ -940,6 +941,15 @@ button { border-radius: 0; }
 .shift-history-list strong, .shift-history-list small { display: block; }
 .shift-history-list strong { font-size: 9px; }
 .shift-history-list small { margin-top: 3px; color: var(--muted); font-size: 8px; }
+.shift-history-actions { display: flex; align-items: center; justify-content: flex-end; }
+.attendance-check-body { padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.attendance-now span, .attendance-now strong, .attendance-now small { display: block; }
+.attendance-now span { color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; }
+.attendance-now strong { margin-top: 5px; font-family: "Sorgtime Hand", sans-serif; font-size: 22px; font-weight: 500; text-transform: uppercase; }
+.attendance-now small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.attendance-check-body .button-primary { flex: 0 0 auto; min-height: 42px; padding: 0 18px; }
+.attendance-check-body .button-primary:disabled { opacity: .6; cursor: not-allowed; }
+.attendance-history-card { margin-top: 16px; }
 
 @media (max-width: 760px) {
   .auth-gate { padding: 12px; }

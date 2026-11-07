@@ -195,9 +195,9 @@ const ROLE_DESCRIPTIONS = {
   barista: 'Membuat pesanan, menerima pembayaran, dan mengelola antrean produksi.'
 };
 const ROLE_PERMISSIONS = {
-  sysadmin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
-  admin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
-  barista: ['pos','kds','payslip']
+  sysadmin: ['pos','kds','inventory','customers','transactions','attendance','reports','payslip','accounts'],
+  admin: ['pos','kds','inventory','customers','transactions','attendance','reports','payslip','accounts'],
+  barista: ['pos','kds','attendance','payslip']
 };
 let authUsers = authBackendReady
   ? (bootProfiles.ok ? bootProfiles.users : cachedProfiles)
@@ -341,7 +341,11 @@ function applyPermissions() {
   $('#shift-button').hidden = !canAccess('pos');
   $('#account-add').hidden = !['sysadmin','admin'].includes(currentUser.role);
   $('#manage-prices').hidden = !['sysadmin','admin'].includes(currentUser.role);
-  $('#attendance-manage').hidden = !isSysadmin();
+  $('#attendance-manage').hidden = !canManageSales();
+  $('#attendance-manage-view').hidden = !canManageSales();
+  $('#attendance-location-settings').hidden = !isSysadmin();
+  const attendanceNavLabel = $('#attendance-nav-label');
+  if (attendanceNavLabel) attendanceNavLabel.textContent = isSysadmin() ? 'Kelola Absen' : 'Absensi';
   $('#payroll-payment').hidden = !isSysadmin();
   $('#payroll-settings').hidden = !isSysadmin();
   $('#shift-location-settings').hidden = !isSysadmin();
@@ -682,12 +686,18 @@ function showCustomerPicker() {
   $('#new-customer-modal').addEventListener('click', showCustomerForm);
 }
 
-function showCustomerForm() {
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Member baru</h2><p>Data minimum untuk mulai mengumpulkan poin</p></div><button class="modal-close">×</button></div><form id="customer-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Nama pelanggan</label><input name="name" required placeholder="Contoh: Nabila"></div><div class="field"><label>Nomor WhatsApp (opsional)</label><input name="phone" inputmode="tel" placeholder="Boleh dikosongkan"></div><div class="field full"><label>Catatan (opsional)</label><textarea name="note" placeholder="Preferensi atau catatan pelanggan"></textarea></div></div><div class="notice">Pelanggan akan memperoleh 1 poin untuk setiap Rp100 nilai transaksi bersih.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan member</button></div></form>`);
+function showCustomerForm(customer = null) {
+  const editing = Boolean(customer);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">${editing ? 'Edit pelanggan' : 'Member baru'}</h2><p>${editing ? 'Perbarui data member tanpa mengubah poin dan riwayat kunjungan' : 'Data minimum untuk mulai mengumpulkan poin'}</p></div><button class="modal-close">×</button></div><form id="customer-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Nama pelanggan</label><input name="name" required placeholder="Contoh: Nabila" value="${escapeHTML(customer?.name || '')}"></div><div class="field"><label>Nomor WhatsApp (opsional)</label><input name="phone" inputmode="tel" placeholder="Boleh dikosongkan" value="${escapeHTML(customer?.phone || '')}"></div><div class="field full"><label>Catatan (opsional)</label><textarea name="note" placeholder="Preferensi atau catatan pelanggan">${escapeHTML(customer?.note || '')}</textarea></div></div><div class="notice">${editing ? 'Poin, kunjungan, dan total belanja tetap dipertahankan. Nama baru akan dipakai pada transaksi berikutnya.' : 'Pelanggan akan memperoleh 1 poin untuk setiap Rp100 nilai transaksi bersih.'}</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">${editing ? 'Simpan perubahan' : 'Simpan member'}</button></div></form>`);
   $('#customer-form').addEventListener('submit', e => {
-    e.preventDefault(); const fd = new FormData(e.target); const name = fd.get('name').trim();
-    const customer = { id: Date.now(), name, phone: (fd.get('phone') || '').trim(), createdAt: Date.now(), visits: 0, spent: 0, points: 0, tier: 'Member', initials: name.split(/\s+/).map(x => x[0]).join('').slice(0,2).toUpperCase(), bg: '#eadfd6', fg: '#604a3e' };
-    state.customers.unshift(customer); state.selectedCustomer = customer; closeModal(); renderCart(); renderCustomers(); toast('Member baru berhasil dibuat', '♙');
+    e.preventDefault(); const fd = new FormData(e.target); const name = fd.get('name').trim(); const phone = (fd.get('phone') || '').trim(); const note = (fd.get('note') || '').trim();
+    if (editing) {
+      Object.assign(customer, { name, phone, note, initials: name.split(/\s+/).map(x => x[0]).join('').slice(0,2).toUpperCase() });
+      save(); closeModal(); renderCustomers($('#customer-search-page')?.value || ''); renderCart(); toast('Data pelanggan berhasil diperbarui', '✎');
+      return;
+    }
+    const entry = { id: Date.now(), name, phone, note, createdAt: Date.now(), visits: 0, spent: 0, points: 0, tier: 'Member', initials: name.split(/\s+/).map(x => x[0]).join('').slice(0,2).toUpperCase(), bg: '#eadfd6', fg: '#604a3e' };
+    state.customers.unshift(entry); state.selectedCustomer = entry; save(); closeModal(); renderCart(); renderCustomers(); toast('Member baru berhasil dibuat', '♙');
   });
 }
 
@@ -812,7 +822,7 @@ function renderCustomers(filter = '') {
     ['♙', state.customers.length, 'Total member', '#efe7de', '#775640', 'Mulai dari 0'], ['✦', totalPoints.toLocaleString('id-ID'), 'Poin aktif', '#fbf3dd', '#9a6b10', 'Tercatat otomatis'], ['↺', `${repeatRate}%`, 'Repeat customer', '#e7f1ed', '#397461', `${repeatCustomers} pelanggan`], ['◇', rupiah(averageSpend), 'Belanja rata-rata', '#eee9f7', '#6c5b95', 'Per member']
   ].map(([icon,value,label,tone,accent,delta])=>`<div class="metric-card"><div class="metric-top"><span class="metric-icon" style="--tone:${tone};--accent:${accent}">${icon}</span><span class="metric-delta">${delta}</span></div><h3>${value}</h3><p>${label}</p></div>`).join('');
   const filtered = state.customers.filter(c=>`${c.name} ${c.phone}`.toLowerCase().includes(filter.toLowerCase()));
-  $('#customer-table').innerHTML = filtered.length ? filtered.map(c=>`<tr><td><div class="person-cell"><span class="person-avatar" style="--bg:${c.bg};--fg:${c.fg}">${c.initials}</span><span><strong>${c.name}</strong><small>Member sejak ${new Intl.DateTimeFormat('id-ID',{month:'short',year:'numeric'}).format(new Date(c.createdAt||Date.now()))}</small></span></div></td><td>${c.phone || '—'}</td><td>${c.visits}×</td><td>${rupiah(c.spent)}</td><td><strong>${c.points.toLocaleString('id-ID')}</strong></td><td><span class="status-badge ${c.tier==='Gold'?'warning':''}">${c.tier}</span></td></tr>`).join('') : `<tr><td colspan="6"><div class="empty-table"><strong>Belum ada pelanggan</strong><span>Member yang ditambahkan akan muncul di sini.</span></div></td></tr>`;
+  $('#customer-table').innerHTML = filtered.length ? filtered.map(c=>`<tr><td><div class="person-cell"><span class="person-avatar" style="--bg:${c.bg};--fg:${c.fg}">${c.initials}</span><span><strong>${escapeHTML(c.name)}</strong><small>Member sejak ${new Intl.DateTimeFormat('id-ID',{month:'short',year:'numeric'}).format(new Date(c.createdAt||Date.now()))}</small></span></div></td><td>${escapeHTML(c.phone || '—')}</td><td>${c.visits}×</td><td>${rupiah(c.spent)}</td><td><strong>${c.points.toLocaleString('id-ID')}</strong></td><td><span class="status-badge ${c.tier==='Gold'?'warning':''}">${c.tier}</span></td><td><div class="history-actions"><button data-customer-edit="${c.id}" title="Edit data pelanggan">✎ Edit</button></div></td></tr>`).join('') : `<tr><td colspan="7"><div class="empty-table"><strong>Belum ada pelanggan</strong><span>Member yang ditambahkan akan muncul di sini.</span></div></td></tr>`;
 }
 
 const TRANSACTION_STATUS = { new: ['Baru', 'warning'], making: ['Dibuat', ''], ready: ['Siap', ''], done: ['Selesai', ''] };
@@ -852,7 +862,7 @@ function renderTransactions() {
     const [statusLabel, statusClass] = TRANSACTION_STATUS[order.status] || [order.status || '—', ''];
     const time = new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(order.created));
     const date = new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Jakarta' }).format(new Date(order.created));
-    return `<tr><td><strong>${time}</strong><small>${date}</small></td><td><strong>#${escapeHTML(order.id)}</strong><small>${escapeHTML(orderShiftLabel(order))}</small></td><td>${escapeHTML(order.cashier || '—')}</td><td>${escapeHTML(order.customer || 'Guest')}</td><td><strong>${orderItemCount(order)} item</strong></td><td><span class="payment-chip">${escapeHTML(order.payment)}</span></td><td><strong>${rupiah(order.total)}</strong></td><td><span class="status-badge ${statusClass}">● ${escapeHTML(statusLabel)}</span></td><td><div class="history-actions"><button data-history-detail="${orderRef(order)}">Detail</button><button data-history-print="${orderRef(order)}" title="Cetak ulang nota">▤</button></div></td></tr>`;
+    return `<tr><td><strong>${time}</strong><small>${date}</small></td><td><strong>#${escapeHTML(order.id)}</strong><small>${escapeHTML(orderShiftLabel(order))}</small></td><td>${escapeHTML(order.cashier || '—')}</td><td>${escapeHTML(order.customer || 'Guest')}</td><td><strong>${orderItemCount(order)} item</strong></td><td><span class="payment-chip">${escapeHTML(order.payment)}</span></td><td><strong>${rupiah(order.total)}</strong></td><td><span class="status-badge ${statusClass}">● ${escapeHTML(statusLabel)}</span></td><td><div class="history-actions"><button data-history-detail="${orderRef(order)}">Detail</button><button data-history-print="${orderRef(order)}" title="Cetak ulang nota">▤</button>${isSysadmin() ? `<button class="danger-action" data-transaction-delete="${orderRef(order)}" title="Hapus transaksi">Hapus</button>` : ''}</div></td></tr>`;
   }).join('') : `<tr><td colspan="9"><div class="empty-table"><strong>Tidak ada transaksi yang cocok</strong><span>Ubah kata kunci atau filter tanggal, kasir, pembayaran, dan status.</span></div></td></tr>`;
 }
 
@@ -872,6 +882,35 @@ function exportTransactions() {
   const rows = [['Order','Shift','Tanggal','Waktu','Kasir','Pelanggan','Jumlah item','Pembayaran','Status','Subtotal','Diskon','Total','HPP','Laba kotor'], ...orders.map(order => { const date = new Date(order.created); return [order.id, orderShiftLabel(order), new Intl.DateTimeFormat('id-ID',{dateStyle:'short',timeZone:'Asia/Jakarta'}).format(date), new Intl.DateTimeFormat('id-ID',{timeStyle:'short',timeZone:'Asia/Jakarta'}).format(date), order.cashier, order.customer, orderItemCount(order), order.payment, TRANSACTION_STATUS[order.status]?.[0] || order.status, order.subtotal, order.discount, order.total, orderHpp(order), Number(order.total)-orderHpp(order)]; })];
   const csv = rows.map(row => row.map(value => { let safe = String(value ?? ''); if (/^[=+\-@]/.test(safe)) safe = `'${safe}`; return `"${safe.replaceAll('"','""')}"`; }).join(',')).join('\n');
   const link = document.createElement('a'); link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' })); link.download = `riwayat-transaksi-sorgtime-${new Date().toISOString().slice(0,10)}.csv`; link.click(); URL.revokeObjectURL(link.href); toast(`${orders.length} transaksi berhasil diekspor`, '⇩');
+}
+
+async function verifyCurrentPassword(password) {
+  if (!currentUser) return { ok: false, message: 'Sesi pengguna tidak ditemukan' };
+  if (authBackendReady) {
+    const result = await cloud.signIn(currentUser.username, password);
+    return result.ok ? { ok: true } : { ok: false, message: 'Password akun tidak sesuai' };
+  }
+  if (!currentUser.salt || !currentUser.passwordHash) return { ok: false, message: 'Password akun tidak dapat diverifikasi' };
+  const inputHash = await hashPassword(password, currentUser.salt);
+  return inputHash === currentUser.passwordHash ? { ok: true } : { ok: false, message: 'Password akun tidak sesuai' };
+}
+
+function showDeleteTransaction(order) {
+  if (!order) return toast('Data transaksi tidak ditemukan', '!');
+  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat menghapus transaksi', '!');
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Hapus transaksi #${escapeHTML(order.id)}</h2><p>${transactionDateTime(order.created)} · ${escapeHTML(order.cashier || '—')} · ${rupiah(order.total)}</p></div><button class="modal-close">×</button></div><form id="delete-transaction-form"><div class="modal-body"><div class="notice danger-notice"><strong>Data transaksi akan dihapus permanen.</strong><span>Stok bahan dan data pelanggan tidak dikembalikan otomatis. Konfirmasi dengan password akun sysadmin yang sedang aktif.</span></div><div class="field"><label>Password akun @${escapeHTML(currentUser.username)}</label><input name="password" type="password" required autofocus autocomplete="current-password" placeholder="Masukkan password Anda"></div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Hapus transaksi</button></div></form>`);
+  $('#delete-transaction-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const password = String(new FormData(event.currentTarget).get('password') || '');
+    if (!password) return toast('Masukkan password akun Anda', '!');
+    const submit = event.currentTarget.querySelector('button[type="submit"]');
+    const originalLabel = submit.textContent;
+    submit.disabled = true; submit.textContent = 'Memeriksa password...';
+    const verified = await verifyCurrentPassword(password);
+    if (!verified.ok) { submit.disabled = false; submit.textContent = originalLabel; return toast(verified.message, '!'); }
+    state.orders = state.orders.filter(item => orderRef(item) !== orderRef(order));
+    save(); closeModal(); renderAll(); toast(`Transaksi #${order.id} berhasil dihapus`, '⌫');
+  });
 }
 
 function canManageUser(user) {
@@ -1237,8 +1276,17 @@ function showPayrollSettings() {
   });
 }
 
+const ATTENDANCE_STATUS = {
+  present: ['Hadir', 'paid'],
+  leave: ['Izin', 'partial'],
+  off: ['Libur', 'unpaid'],
+  absent: ['Tidak hadir', 'unpaid']
+};
+const attendanceStatusInfo = status => ATTENDANCE_STATUS[status] || [status || '—', 'unpaid'];
+const attendanceTimeLabel = timestamp => timestamp ? new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(timestamp)) : '—';
+
 function showAttendanceManager() {
-  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengelola hari kerja', '!');
+  if (!canManageSales()) return toast('Hanya sysadmin atau admin yang dapat mengelola kehadiran', '!');
   const data = reportData(); const users = authUsers.filter(user => user.status !== 'inactive');
   if (!users.length) return toast('Buat akun karyawan terlebih dahulu', '!');
   const payrollRows = reportPayroll(data.dateKeys).filter(row => row.id);
@@ -1248,13 +1296,13 @@ function showAttendanceManager() {
     const row = payrollRows.find(item => item.id === user.id) || { workDays: 0, cups: 0 };
     return `<tr><td><strong>${escapeHTML(user.name)}</strong><small>${escapeHTML(ROLE_LABELS[user.role] || user.role)}</small></td><td><strong>${row.workDays}</strong> hari</td><td>${row.cups} cup</td><td><input type="date" data-workday-date="${user.id}" min="${data.from}" max="${data.to}" value="${data.to}"></td><td><button type="button" class="purchase-edit" data-add-workday="${user.id}">＋ Tambah hari</button></td></tr>`;
   }).join('');
-  const rows = entries.length ? entries.map(entry => { const user = authUsers.find(item => item.id === entry.userId); const label = entry.status === 'present' ? 'Hadir' : entry.status === 'off' ? 'Libur' : 'Tidak hadir'; return `<tr><td>${entry.date}</td><td><strong>${escapeHTML(user?.name || 'Akun dihapus')}</strong></td><td><span class="payroll-status ${entry.status === 'present' ? 'paid' : 'unpaid'}">${label}</span></td><td>${escapeHTML(entry.note || '—')}</td><td><button type="button" class="purchase-edit" data-attendance-delete="${entry.id}">Hapus</button></td></tr>`; }).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada koreksi manual</strong><span>Kehadiran kasir tetap otomatis berasal dari shift dan transaksi.</span></div></td></tr>';
+  const rows = entries.length ? entries.map(entry => { const user = authUsers.find(item => item.id === entry.userId); const [label, tone] = attendanceStatusInfo(entry.status); const time = entry.checkInAt ? ` · ${attendanceTimeLabel(entry.checkInAt)}` : ''; return `<tr><td>${entry.date}</td><td><strong>${escapeHTML(user?.name || 'Akun dihapus')}</strong></td><td><span class="payroll-status ${tone}">${label}</span>${time}</td><td>${escapeHTML(entry.note || '—')}</td><td><button type="button" class="purchase-edit" data-attendance-delete="${entry.id}">Hapus</button></td></tr>`; }).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada koreksi manual</strong><span>Kehadiran kasir tetap otomatis berasal dari shift dan transaksi.</span></div></td></tr>';
   openModal(`<div class="modal-header"><div><h2 id="modal-title">Hari kerja karyawan</h2><p>${data.from} s.d. ${data.to} · satu hari kerja ${workStart}–${workEnd} WIB</p></div><button class="modal-close">×</button></div><form id="attendance-form"><div class="modal-body">
     <div class="notice">Tambahkan hari kerja untuk karyawan yang tidak tercatat otomatis oleh shift atau transaksi. Satu hari kerja dihitung penuh untuk jam ${workStart}–${workEnd} WIB. Koreksi manual mengalahkan data otomatis pada tanggal yang sama.</div>
     <h3 class="shift-history-title">Tambah hari kerja per karyawan</h3>
     <div class="table-wrap modal-record-table"><table><thead><tr><th>Karyawan</th><th>Hari kerja</th><th>Cup</th><th>Tanggal</th><th></th></tr></thead><tbody>${summaryRows}</tbody></table></div>
     <h3 class="shift-history-title">Koreksi kehadiran</h3>
-    <div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${data.from}" max="${data.to}" value="${data.to}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div>
+    <div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${data.from}" max="${data.to}" value="${data.to}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="leave">Izin</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div>
     <div class="table-wrap modal-record-table"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Catatan</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Kembali</button><button type="submit" class="button-primary">Simpan kehadiran</button></div></form>`, true);
   $$('[data-add-workday]', $('#modal')).forEach(button => button.addEventListener('click', () => {
@@ -1265,12 +1313,110 @@ function showAttendanceManager() {
     const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date);
     const row = payrollRows.find(item => item.id === userId);
     if (!existing && row?.days?.has(date)) return toast('Tanggal ini sudah tercatat sebagai hari kerja', '!');
-    const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: 'present', note: existing?.note || 'Ditambahkan sysadmin', updatedAt: Date.now(), updatedBy: currentUser.id };
+    const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: 'present', note: existing?.note || `Ditambahkan ${currentUser.name}`, updatedAt: Date.now(), updatedBy: currentUser.id };
     if (existing) Object.assign(existing, entry); else state.attendance.push(entry);
-    save(); closeModal(); renderReports(); showAttendanceManager(); toast('Hari kerja ditambahkan', '◷');
+    save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Hari kerja ditambahkan', '◷');
   }));
-  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: form.get('status'), note: form.get('note').trim(), updatedAt: Date.now(), updatedBy: currentUser.id }; if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
-  $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => { state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); showAttendanceManager(); }));
+  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const status = form.get('status'); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status, note: form.get('note').trim(), source: 'admin', updatedAt: Date.now(), updatedBy: currentUser.id }; if (status !== 'present') { entry.checkInAt = null; entry.location = null; } if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
+  $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => { if (!confirm('Hapus data kehadiran ini?')) return; state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); }));
+}
+
+function attendanceEntryFor(userId, date) {
+  return state.attendance.find(entry => entry.userId === userId && entry.date === date);
+}
+function attendanceLocationLabel(entry) {
+  if (!entry?.location) return '—';
+  const distance = Number(entry.location.distance);
+  return `${escapeHTML(entry.location.label || 'Titik absensi')}${Number.isFinite(distance) ? ` · ${Math.round(distance)} m` : ''}`;
+}
+function attendanceHistoryRows(entries) {
+  return entries.length ? entries.map(entry => {
+    const user = authUsers.find(item => item.id === entry.userId);
+    const [label, tone] = attendanceStatusInfo(entry.status);
+    return `<tr><td><strong>${entry.date}</strong><small>${entry.source === 'self' ? 'Absen mandiri' : 'Koreksi admin'}</small></td><td><strong>${escapeHTML(user?.name || 'Akun dihapus')}</strong></td><td><span class="payroll-status ${tone}">${label}</span></td><td>${entry.checkInAt ? attendanceTimeLabel(entry.checkInAt) : '—'}</td><td>${attendanceLocationLabel(entry)}</td><td>${escapeHTML(entry.note || '—')}</td></tr>`;
+  }).join('') : `<tr><td colspan="6"><div class="empty-table"><strong>Belum ada riwayat absensi</strong><span>Data absensi akan muncul setelah karyawan melakukan absen atau admin mencatat koreksi.</span></div></td></tr>`;
+}
+async function selfCheckIn() {
+  if (!currentUser) return;
+  if (isSysadmin()) return toast('Sysadmin mengelola absensi, bukan melakukan absen pribadi', '!');
+  const today = jakartaDateKey();
+  const existing = attendanceEntryFor(currentUser.id, today);
+  if (existing) return toast(`Absensi hari ini sudah tercatat sebagai ${attendanceStatusInfo(existing.status)[0]}`, '!');
+  const button = $('#attendance-check-in');
+  const original = button?.innerHTML;
+  if (button) { button.disabled = true; button.textContent = 'Memeriksa lokasi...'; }
+  try {
+    const check = await verifyShiftLocation();
+    if (!check.ok) {
+      if (button) { button.disabled = false; button.innerHTML = original; }
+      return toast(`Di luar radius lokasi absensi (${Math.round(check.distance)} m). Dekati lokasi outlet lalu coba lagi`, '!');
+    }
+    const now = Date.now();
+    state.attendance.push({
+      id: crypto.randomUUID(), userId: currentUser.id, date: today, status: 'present',
+      note: check.settings?.enabled ? `Absen mandiri di ${check.settings.label}` : 'Absen mandiri',
+      checkInAt: now, source: 'self',
+      location: check.settings?.enabled ? { label: check.settings.label, distance: Math.round(check.distance), accuracy: Math.round(check.accuracy || 0), latitude: check.latitude, longitude: check.longitude } : null,
+      updatedAt: now, updatedBy: currentUser.id
+    });
+    save(); renderAttendance(); renderReports(); renderPayslip();
+    toast('Absensi berhasil dicatat', '✓');
+  } catch (error) {
+    if (button) { button.disabled = false; button.innerHTML = original; }
+    toast(error.message, '!');
+  }
+}
+function renderAttendance() {
+  const content = $('#attendance-content'); if (!content || !currentUser) return;
+  const today = jakartaDateKey();
+  const employees = authUsers.filter(user => user.status !== 'inactive');
+  const todayEntries = state.attendance.filter(entry => entry.date === today);
+  const location = shiftLocationSettings();
+  const admin = canManageSales();
+  const title = $('#attendance-title'); const subtitle = $('#attendance-subtitle');
+  const manageButton = $('#attendance-manage-view'); const locationButton = $('#attendance-location-settings');
+  if (manageButton) manageButton.hidden = !admin;
+  if (locationButton) locationButton.hidden = !isSysadmin();
+  if (title) title.textContent = isSysadmin() ? 'Kelola absensi' : 'Absensi saya';
+  if (subtitle) subtitle.textContent = isSysadmin() ? 'Pantau kehadiran dan ubah status izin seluruh karyawan' : `Catat kehadiran di ${location.enabled ? location.label || 'titik lokasi outlet' : 'lokasi outlet'}`;
+  const dateLabel = new Intl.DateTimeFormat('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' }).format(new Date());
+  if (isSysadmin()) {
+    const present = todayEntries.filter(entry => entry.status === 'present').length;
+    const leave = todayEntries.filter(entry => entry.status === 'leave').length;
+    const absent = employees.filter(user => { const entry = todayEntries.find(item => item.userId === user.id); return entry && ['absent', 'off'].includes(entry.status); }).length;
+    const notYet = employees.filter(user => !todayEntries.some(item => item.userId === user.id)).length;
+    $('#attendance-metrics').innerHTML = [
+      ['◷', present, 'Hadir hari ini', '#e7f1ed', '#397461'], ['◇', leave, 'Izin', '#fbf3dd', '#9a6b10'], ['!', absent, 'Libur / tidak hadir', '#f6d9d5', '#b83d3d'], ['…', notYet, 'Belum absen', '#eee9f7', '#6c5b95']
+    ].map(([icon,value,label,tone,accent]) => `<div class="metric-card"><div class="metric-top"><span class="metric-icon" style="--tone:${tone};--accent:${accent}">${icon}</span></div><h3>${value}</h3><p>${label}</p></div>`).join('');
+    const todayRows = employees.length ? employees.map(user => {
+      const entry = todayEntries.find(item => item.userId === user.id);
+      const [label, tone] = entry ? attendanceStatusInfo(entry.status) : ['Belum absen', 'unpaid'];
+      return `<tr><td><strong>${escapeHTML(user.name)}</strong><small>${escapeHTML(ROLE_LABELS[user.role] || user.role)}</small></td><td><span class="payroll-status ${tone}">${label}</span></td><td>${entry?.checkInAt ? attendanceTimeLabel(entry.checkInAt) : '—'}</td><td>${attendanceLocationLabel(entry)}</td><td>${escapeHTML(entry?.note || '—')}</td></tr>`;
+    }).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada karyawan aktif</strong></div></td></tr>';
+    const recent = [...state.attendance].sort((a, b) => b.date.localeCompare(a.date) || Number(b.checkInAt || b.updatedAt || 0) - Number(a.checkInAt || a.updatedAt || 0)).slice(0, 30);
+    content.innerHTML = `<div class="content-card"><div class="card-header"><div><h3>Kehadiran hari ini</h3><p>${escapeHTML(dateLabel)}</p></div><button class="secondary-button" id="attendance-manage-inline">◷ Kelola absensi</button></div><div class="table-wrap"><table><thead><tr><th>Karyawan</th><th>Status</th><th>Jam absen</th><th>Lokasi</th><th>Catatan</th></tr></thead><tbody>${todayRows}</tbody></table></div></div><div class="content-card attendance-history-card"><div class="card-header"><div><h3>Riwayat absensi terbaru</h3><p>30 catatan terakhir dari seluruh karyawan</p></div></div><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Jam</th><th>Lokasi</th><th>Catatan</th></tr></thead><tbody>${attendanceHistoryRows(recent)}</tbody></table></div></div>`;
+    $('#attendance-manage-inline')?.addEventListener('click', showAttendanceManager);
+    return;
+  }
+  const month = today.slice(0, 7);
+  const mine = state.attendance.filter(entry => entry.userId === currentUser.id);
+  const mineMonth = mine.filter(entry => entry.date.startsWith(month));
+  const presentDays = new Set(mineMonth.filter(entry => entry.status === 'present').map(entry => entry.date)).size;
+  const leaveDays = new Set(mineMonth.filter(entry => entry.status === 'leave').map(entry => entry.date)).size;
+  const offDays = new Set(mineMonth.filter(entry => entry.status === 'off').map(entry => entry.date)).size;
+  const todayEntry = attendanceEntryFor(currentUser.id, today);
+  const [todayLabelText, todayTone] = todayEntry ? attendanceStatusInfo(todayEntry.status) : ['Belum absen', 'unpaid'];
+  const todaySummary = todayEntry && todayEntry.checkInAt ? `${todayLabelText} · ${attendanceTimeLabel(todayEntry.checkInAt)}` : todayLabelText;
+  $('#attendance-metrics').innerHTML = [
+    ['◷', presentDays, 'Hadir bulan ini', '#e7f1ed', '#397461'], ['◇', leaveDays, 'Izin bulan ini', '#fbf3dd', '#9a6b10'], ['⌂', offDays, 'Libur bulan ini', '#f6d9d5', '#b83d3d'], ['◎', todaySummary, 'Status hari ini', '#eee9f7', '#6c5b95']
+  ].map(([icon,value,label,tone,accent]) => `<div class="metric-card"><div class="metric-top"><span class="metric-icon" style="--tone:${tone};--accent:${accent}">${icon}</span></div><h3>${value}</h3><p>${label}</p></div>`).join('');
+  const canCheckIn = !todayEntry;
+  const buttonLabel = todayEntry ? (todayEntry.status === 'present' ? `✓ Sudah absen${todayEntry.checkInAt ? ` · ${attendanceTimeLabel(todayEntry.checkInAt)}` : ''}` : `Status: ${todayLabelText}`) : '◷ Absen sekarang';
+  const locationNotice = location.enabled
+    ? `<strong>Lokasi absensi:</strong> ${escapeHTML(location.label || 'Titik lokasi outlet')} (radius ${Number(location.radius || 0)} m). Absen hanya dapat dilakukan di sekitar titik ini.`
+    : 'Lokasi absensi belum diwajibkan. Sysadmin dapat menetapkan titik absensi melalui tombol <strong>Lokasi absensi</strong>.';
+  const history = [...mine].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+  content.innerHTML = `<div class="content-card attendance-check-card"><div class="card-header"><div><h3>Kehadiran hari ini</h3><p>${escapeHTML(dateLabel)}</p></div><span class="payroll-status ${todayTone}">${todayLabelText}</span></div><div class="attendance-check-body"><div class="attendance-now"><span>Absensi mandiri</span><strong>${escapeHTML(todaySummary)}</strong><small>${todayEntry?.note ? escapeHTML(todayEntry.note) : 'Tekan tombol absen saat tiba di outlet.'}</small></div><button class="button-primary" id="attendance-check-in" data-attendance-check-in ${canCheckIn ? '' : 'disabled'}>${escapeHTML(buttonLabel)}</button></div><div class="notice">${locationNotice}</div></div><div class="content-card attendance-history-card"><div class="card-header"><div><h3>Riwayat absensi saya</h3><p>30 catatan terakhir${admin ? ' · Anda dapat mengubah status izin melalui tombol Kelola absensi' : ''}</p></div></div><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Jam</th><th>Lokasi</th><th>Catatan</th></tr></thead><tbody>${attendanceHistoryRows(history)}</tbody></table></div></div>`;
 }
 
 function showPayrollPayment() {
@@ -1363,7 +1509,7 @@ function renderShiftState() {
 function shiftHistoryHTML() {
   const recent = [...state.shifts].sort((a, b) => b.startedAt - a.startedAt).slice(0, 5);
   if (!recent.length) return '<div class="empty-inline"><strong>Belum ada riwayat shift</strong><span>Shift pertama akan tercatat setelah dibuka.</span></div>';
-  return `<div class="shift-history-list">${recent.map(shift => { const summary = shiftSummary(shift); return `<div><span><strong>${transactionDateTime(shift.startedAt)}</strong><small>${escapeHTML(shift.startedBy || '—')} · ${shift.endedAt ? shiftDuration(shift) : 'Sedang aktif'}</small></span><span><strong>${summary.orders.length} trx · ${rupiah(summary.revenue)}</strong><small>${shift.endedAt ? `Selisih ${rupiah(shift.cashDifference || 0)}` : 'Belum ditutup'}</small></span></div>`; }).join('')}</div>`;
+  return `<div class="shift-history-list">${recent.map(shift => { const summary = shiftSummary(shift); return `<div><span><strong>${transactionDateTime(shift.startedAt)}</strong><small>${escapeHTML(shift.startedBy || '—')} · ${shift.endedAt ? shiftDuration(shift) : 'Sedang aktif'}</small></span><span><strong>${summary.orders.length} trx · ${rupiah(summary.revenue)}</strong><small>${shift.endedAt ? `Selisih ${rupiah(shift.cashDifference || 0)}` : 'Belum ditutup'}</small></span>${isSysadmin() && shift.endedAt ? `<span class="shift-history-actions"><button type="button" class="purchase-edit danger-button" data-shift-delete="${shift.id}" title="Hapus data riwayat shift">Hapus</button></span>` : ''}</div>`; }).join('')}</div>`;
 }
 function defaultShiftLocation() { return { enabled: false, label: '', latitude: null, longitude: null, radius: 50 }; }
 function shiftLocationSettings() { return { ...defaultShiftLocation(), ...(state.shiftLocation || {}) }; }
@@ -1380,7 +1526,7 @@ function distanceMeters(fromLat, fromLon, toLat, toLon) {
   return 2 * earth * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 function locationErrorMessage(error) {
-  if (error?.code === 1) return 'Izin lokasi ditolak. Aktifkan akses lokasi untuk membuka shift';
+  if (error?.code === 1) return 'Izin lokasi ditolak. Aktifkan akses lokasi untuk membuka shift atau absen';
   if (error?.code === 3) return 'Waktu pembacaan lokasi habis. Coba lagi di area terbuka';
   return 'Lokasi saat ini tidak dapat dibaca. Pastikan GPS aktif lalu coba lagi';
 }
@@ -1395,20 +1541,20 @@ async function verifyShiftLocation() {
   return { ok: distance <= Number(settings.radius || 0), distance, accuracy: position.coords.accuracy, latitude: position.coords.latitude, longitude: position.coords.longitude, settings };
 }
 function showShiftLocationSettings() {
-  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengatur lokasi shift', '!');
+  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengatur lokasi shift & absensi', '!');
   const settings = shiftLocationSettings();
   const hasPoint = Number.isFinite(Number(settings.latitude)) && Number.isFinite(Number(settings.longitude));
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Atur lokasi shift</h2><p>Shift hanya bisa dibuka ketika perangkat berada di titik ini</p></div><button class="modal-close">×</button></div><form id="shift-location-form"><div class="modal-body">
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Atur lokasi shift & absensi</h2><p>Shift dan absensi hanya bisa dilakukan ketika perangkat berada di titik ini</p></div><button class="modal-close">×</button></div><form id="shift-location-form"><div class="modal-body">
     <div class="form-grid">
       <div class="field full"><label>Nama lokasi</label><input name="label" maxlength="80" value="${escapeHTML(settings.label || '')}" placeholder="Contoh: Sorgtime Coffee Bar" required></div>
       <div class="field"><label>Latitude</label><input name="latitude" type="number" step="any" min="-90" max="90" value="${hasPoint ? Number(settings.latitude) : ''}" required></div>
       <div class="field"><label>Longitude</label><input name="longitude" type="number" step="any" min="-180" max="180" value="${hasPoint ? Number(settings.longitude) : ''}" required></div>
       <div class="field"><label>Radius toleransi (meter)</label><input name="radius" type="number" min="5" max="10000" step="5" value="${Number(settings.radius || 50)}" required></div>
-      <div class="field"><label>Status</label><label class="checkbox-line"><input name="enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}> Wajibkan saat membuka shift</label></div>
+      <div class="field"><label>Status</label><label class="checkbox-line"><input name="enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}> Wajibkan saat membuka shift dan absen</label></div>
     </div>
     <div class="toolbar-group" style="margin:12px 0"><button type="button" class="secondary-button" id="shift-location-detect">◎ Gunakan lokasi saat ini</button></div>
     <div class="notice" id="shift-location-status">${settings.enabled ? `Aktif · ${escapeHTML(settings.label || 'Titik lokasi')} · radius ${Number(settings.radius || 0)} m` : 'Belum diwajibkan. Isi titik lalu centang wajib untuk mengaktifkan.'}</div>
-    <div class="notice">Browser hanya mengizinkan pembacaan lokasi pada koneksi aman (HTTPS atau localhost). Minta karyawan mengizinkan akses lokasi saat diminta.</div>
+    <div class="notice">Browser hanya mengizinkan pembacaan lokasi pada koneksi aman (HTTPS atau localhost). Minta karyawan mengizinkan akses lokasi saat diminta. Titik ini dipakai untuk membuka shift dan absen mandiri.</div>
   </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan lokasi</button></div></form>`, true);
   const form = $('#shift-location-form');
   $('#shift-location-detect').addEventListener('click', async () => {
@@ -1430,7 +1576,7 @@ function showShiftLocationSettings() {
     const radius = Math.max(5, Math.min(10000, Number(data.get('radius')) || 50));
     if (enabled && (!label || !Number.isFinite(latitude) || !Number.isFinite(longitude))) return toast('Isi nama, latitude, dan longitude lokasi', '!');
     state.shiftLocation = { enabled, label, latitude: Number.isFinite(latitude) ? latitude : null, longitude: Number.isFinite(longitude) ? longitude : null, radius, updatedAt: Date.now(), updatedBy: currentUser.id };
-    save(); closeModal(); renderReports(); toast(enabled ? 'Lokasi shift berhasil diwajibkan' : 'Kewajiban lokasi shift dimatikan', '◎');
+    save(); closeModal(); renderAttendance(); renderReports(); toast(enabled ? 'Lokasi shift & absensi berhasil diwajibkan' : 'Kewajiban lokasi shift & absensi dimatikan', '◎');
   });
 }
 function showShiftManager() {
@@ -1440,7 +1586,7 @@ function showShiftManager() {
     const location = shiftLocationSettings();
     const locationNotice = location.enabled
       ? `<div class="notice" id="shift-location-notice"><strong>Lokasi wajib:</strong> ${escapeHTML(location.label || 'Titik lokasi outlet')} (radius ${Number(location.radius || 0)} m). <button type="button" class="purchase-edit" id="shift-location-check">Periksa lokasi</button> <span id="shift-location-result"></span></div>`
-      : `<div class="notice">Shift belum diwajibkan pada titik lokasi tertentu.${isSysadmin() ? ' Atur melalui tombol <strong>Lokasi shift</strong> di halaman Laporan.' : ''}</div>`;
+      : `<div class="notice">Shift belum diwajibkan pada titik lokasi tertentu.${isSysadmin() ? ' Atur melalui tombol <strong>Lokasi shift</strong> di halaman Laporan atau <strong>Lokasi absensi</strong> di halaman absensi.' : ''}</div>`;
     openModal(`<div class="modal-header"><div><h2 id="modal-title">Mulai shift baru</h2><p>Nomor antrean akan dimulai kembali dari A-001</p></div><button class="modal-close">×</button></div><form id="start-shift-form"><div class="modal-body"><div class="payment-total-box"><span>KAS AWAL</span><strong id="opening-cash-preview">${rupiah(0)}</strong></div><div class="field"><label>Nominal kas awal</label><input name="openingCash" id="opening-cash" type="number" min="0" step="1000" value="0" required autofocus></div><div class="notice">Transaksi hanya dapat dibuat saat shift aktif. Membuka shift akan mengosongkan keranjang lama dan mereset nomor pesanan ke A-001.</div>${locationNotice}<h3 class="shift-history-title">Riwayat shift terakhir</h3>${shiftHistoryHTML()}</div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Mulai shift</button></div></form>`, true);
     $('#opening-cash').addEventListener('input', event => { $('#opening-cash-preview').textContent = rupiah(Math.max(0, Number(event.target.value) || 0)); });
     $('#shift-location-check')?.addEventListener('click', async () => {
@@ -1483,17 +1629,17 @@ function showShiftManager() {
   });
 }
 
-function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderCustomers(); renderTransactions(); renderReports(); renderPayslip(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
+function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderCustomers(); renderTransactions(); renderAttendance(); renderReports(); renderPayslip(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
 
 const todayLabel = new Intl.DateTimeFormat('id-ID',{weekday:'long',day:'numeric',month:'long',timeZone:'Asia/Jakarta'}).format(new Date());
-const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], customers:['Pelanggan','LOYALTY'], transactions:['Riwayat','TRANSAKSI & NOTA'], reports:['Laporan','PERFORMA OUTLET'], payslip:['Slip Gaji','GAJI KARYAWAN'], accounts:['Akun','PENGGUNA & PERAN'] };
+const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], customers:['Pelanggan','LOYALTY'], transactions:['Riwayat','TRANSAKSI & NOTA'], attendance:['Absensi','KEHADIRAN KARYAWAN'], reports:['Laporan','PERFORMA OUTLET'], payslip:['Slip Gaji','GAJI KARYAWAN'], accounts:['Akun','PENGGUNA & PERAN'] };
 function switchView(view) {
   if (!canAccess(view)) return toast('Anda tidak memiliki akses ke halaman tersebut','!');
   $$('.view').forEach(v=>v.classList.toggle('active', v.id===`view-${view}`));
   $$('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===view));
   $('#page-title').textContent = pageMeta[view][0]; $('#page-eyebrow').textContent = pageMeta[view][1];
   $('.sidebar').classList.remove('open');
-  if (view==='kds') renderKDS(); if (view==='transactions') renderTransactions(); if (view==='reports') renderReports(); if (view==='payslip') renderPayslip(); if (view==='accounts') renderAccounts();
+  if (view==='kds') renderKDS(); if (view==='transactions') renderTransactions(); if (view==='attendance') renderAttendance(); if (view==='reports') renderReports(); if (view==='payslip') renderPayslip(); if (view==='accounts') renderAccounts();
 }
 
 function updateNetworkUI() {
@@ -1652,6 +1798,20 @@ document.addEventListener('click', async e => {
   const inventoryEdit = e.target.closest('[data-inventory-edit]'); if (inventoryEdit) showInventoryItemForm(state.inventory.find(i => String(i.id) === inventoryEdit.dataset.inventoryEdit));
   const historyDetail = e.target.closest('[data-history-detail]'); if (historyDetail) showTransactionDetail(state.orders.find(order => orderRef(order) === historyDetail.dataset.historyDetail));
   const historyPrint = e.target.closest('[data-history-print]'); if (historyPrint) printReceipt(state.orders.find(order => orderRef(order) === historyPrint.dataset.historyPrint));
+  const transactionDelete = e.target.closest('[data-transaction-delete]'); if (transactionDelete) showDeleteTransaction(state.orders.find(order => orderRef(order) === transactionDelete.dataset.transactionDelete));
+  const customerEdit = e.target.closest('[data-customer-edit]'); if (customerEdit) showCustomerForm(state.customers.find(customer => String(customer.id) === customerEdit.dataset.customerEdit));
+  const attendanceCheckIn = e.target.closest('[data-attendance-check-in]'); if (attendanceCheckIn) await selfCheckIn();
+  const shiftDelete = e.target.closest('[data-shift-delete]');
+  if (shiftDelete) {
+    if (!isSysadmin()) return toast('Hanya sysadmin yang dapat menghapus riwayat shift', '!');
+    const shift = state.shifts.find(item => item.id === shiftDelete.dataset.shiftDelete);
+    if (!shift) return;
+    if (!shift.endedAt) return toast('Tutup shift sebelum menghapus riwayatnya', '!');
+    if (!confirm('Hapus data riwayat shift ini? Transaksi yang tercatat tetap tersimpan.')) return;
+    state.shifts = state.shifts.filter(item => item.id !== shift.id);
+    if (state.activeShiftId === shift.id) state.activeShiftId = null;
+    save(); closeModal(); renderAll(); toast('Riwayat shift dihapus', '⌫');
+  }
   const purchaseEdit = e.target.closest('[data-purchase-edit]'); if (purchaseEdit) showPurchaseEditor(state.inventoryMovements.find(movement => movement.id === purchaseEdit.dataset.purchaseEdit));
   if (e.target.closest('[data-open-hpp]')) showHppManager();
   const accountEdit = e.target.closest('[data-account-edit]'); if (accountEdit) { const user=authUsers.find(item=>item.id===accountEdit.dataset.accountEdit); if(user)showAccountEdit(user); }
@@ -1710,6 +1870,8 @@ $('#stock-add').addEventListener('click', ()=>showStockForm());
 $('#stock-opname').addEventListener('click', ()=>showInventoryItemForm());
 $('#export-report').addEventListener('click', exportCSV);
 $('#attendance-manage').addEventListener('click', showAttendanceManager);
+$('#attendance-manage-view').addEventListener('click', showAttendanceManager);
+$('#attendance-location-settings').addEventListener('click', showShiftLocationSettings);
 $('#payroll-payment').addEventListener('click', showPayrollPayment);
 $('#payroll-settings').addEventListener('click', showPayrollSettings);
 $('#shift-location-settings').addEventListener('click', showShiftLocationSettings);
