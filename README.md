@@ -61,3 +61,5 @@ Workflow `.github/workflows/github-pages-deploy.yml` akan mempublikasikan folder
 ## Catatan
 
 Versi ini adalah implementasi frontend dengan penyimpanan lokal, Supabase Auth per pengguna, RLS berbasis peran, dan sinkronisasi snapshot ke Supabase. Printer native serta gateway pembayaran masih memerlukan layanan produksi terpisah. Sinkronisasi multi-perangkat memakai model snapshot last-write-wins; konflik bersamaan dapat menimpa perubahan terakhir.
+
+Dialog konfirmasi tindakan (misalnya hapus data atau kosongkan keranjang) memakai komponen di dalam aplikasi dengan tema yang sama, bukan dialog bawaan browser. Dialog mendukung tombol Batal, tombol Escape, dan klik pada latar untuk membatalkan.

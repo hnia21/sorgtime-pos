@@ -311,6 +311,30 @@ td small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .modal-footer button { flex: 1; height: 44px; border-radius: 11px; cursor: pointer; font-size: 11px; font-weight: 800; }
 .button-ghost { border: 1px solid var(--line); background: white; }
 .button-primary { border: 0; background: var(--brand); color: white; }
+.confirm-backdrop { position: fixed; z-index: 70; inset: 0; padding: 18px; background: rgba(34,48,31,.74); backdrop-filter: blur(4px); display: grid; place-items: center; }
+.confirm-backdrop[hidden] { display: none; }
+.confirm-dialog { width: min(430px, 100%); border: 1.5px solid var(--ink); border-radius: 3px; background: var(--paper); box-shadow: 8px 8px 0 var(--ink); animation: confirm-in .18s ease; }
+.confirm-header { padding: 20px 20px 16px; display: flex; align-items: flex-start; gap: 14px; }
+.confirm-icon { flex: 0 0 auto; width: 42px; height: 42px; border: 1.5px solid var(--ink); border-radius: 50%; display: grid; place-items: center; background: var(--yellow-soft); color: #9a6b10; font-family: Georgia, serif; font-size: 20px; font-weight: 700; box-shadow: 2px 2px 0 var(--ink); }
+.confirm-dialog.danger .confirm-icon { background: #f6d9d5; color: var(--danger); }
+.confirm-copy { min-width: 0; }
+.confirm-copy h2 { margin: 0; font-family: "Sorgtime Hand", Georgia, serif; font-size: 20px; font-weight: 500; line-height: 1.15; text-transform: uppercase; }
+.confirm-copy p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.confirm-footer { padding: 14px 20px 18px; border-top: 1px solid var(--ink); display: flex; gap: 10px; }
+.confirm-footer button { flex: 1; height: 44px; border-radius: 2px; cursor: pointer; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.confirm-footer .button-ghost { border: 1px solid var(--ink) !important; background: var(--paper); color: var(--ink); }
+.confirm-footer .button-primary { border: 1px solid var(--ink) !important; background: var(--brand); color: white; box-shadow: 3px 3px 0 var(--ink); }
+.confirm-dialog.danger .confirm-footer .button-primary { background: var(--danger); }
+.confirm-footer button:active { transform: translate(2px,2px); box-shadow: 1px 1px 0 var(--ink); }
+@keyframes confirm-in { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (max-width: 760px) {
+  .confirm-backdrop { padding: 10px; }
+  .confirm-header { padding: 16px 15px 13px; gap: 11px; }
+  .confirm-icon { width: 36px; height: 36px; font-size: 17px; }
+  .confirm-copy h2 { font-size: 18px; }
+  .confirm-footer { padding: 12px 15px 15px; }
+  .confirm-footer button { height: 46px; }
+}
 .modifier-product { display: flex; gap: 13px; align-items: center; margin-bottom: 17px; }
 .modifier-product .product-art { width: 74px; height: 74px; flex: 0 0 auto; }
 .modifier-product h3 { margin: 0 0 3px; font-size: 14px; }
