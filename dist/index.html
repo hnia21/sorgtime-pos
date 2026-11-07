@@ -38,8 +38,6 @@
         <button class="nav-item active" data-view="pos"><span class="nav-icon">⌂</span><span>Kasir</span></button>
         <button class="nav-item" data-view="kds"><span class="nav-icon">▣</span><span>Barista</span><em id="kds-count">3</em></button>
         <button class="nav-item" data-view="inventory"><span class="nav-icon">◇</span><span>Inventori</span></button>
-        <button class="nav-item" data-view="customers"><span class="nav-icon">♙</span><span>Pelanggan</span></button>
-        <button class="nav-item" data-view="transactions"><span class="nav-icon">▤</span><span>Riwayat</span></button>
         <button class="nav-item" data-view="reports"><span class="nav-icon">↗</span><span>Laporan</span></button>
         <button class="nav-item" data-view="payslip"><span class="nav-icon">▦</span><span>Slip Gaji</span></button>
         <button class="nav-item" data-view="accounts" id="nav-accounts"><span class="nav-icon">⚙</span><span>Akun</span></button>
@@ -133,43 +131,10 @@
         </div>
       </section>
 
-      <section class="view" id="view-customers">
-        <div class="section-toolbar">
-          <div><span class="hand-label">SORGTIME PEOPLE</span><h2>Pelanggan & loyalty</h2><p>Bangun hubungan, bukan hanya transaksi</p></div>
-          <button class="primary-small" id="customer-add">＋ Tambah pelanggan</button>
-        </div>
-        <div class="metric-grid" id="customer-metrics"></div>
-        <div class="content-card">
-          <div class="card-header"><div><h3>Member terbaru</h3><p>Riwayat poin dan kunjungan pelanggan</p></div><label class="small-search">⌕ <input id="customer-search-page" placeholder="Cari nama atau nomor..."></label></div>
-          <div class="table-wrap"><table><thead><tr><th>Pelanggan</th><th>Kontak</th><th>Kunjungan</th><th>Total belanja</th><th>Poin</th><th>Status</th></tr></thead><tbody id="customer-table"></tbody></table></div>
-        </div>
-      </section>
-
-      <section class="view" id="view-transactions">
-        <div class="section-toolbar">
-          <div><span class="hand-label">CATATAN PENJUALAN</span><h2>Riwayat transaksi</h2><p>Lacak pesanan, kasir, pembayaran, dan cetak ulang nota</p></div>
-          <button class="secondary-button" id="export-transactions">⇩ Ekspor hasil filter</button>
-        </div>
-        <div class="metric-grid" id="transaction-metrics"></div>
-        <div class="history-filter-card">
-          <label class="history-search">⌕ <input id="transaction-search" type="search" placeholder="Cari nomor order atau pelanggan..."></label>
-          <label><span>Dari tanggal</span><input id="transaction-date-from" type="date"></label>
-          <label><span>Sampai tanggal</span><input id="transaction-date-to" type="date"></label>
-          <label><span>Kasir</span><select id="transaction-cashier"><option value="">Semua kasir</option></select></label>
-          <label><span>Pembayaran</span><select id="transaction-payment"><option value="">Semua metode</option><option value="Tunai">Tunai</option><option value="QRIS">QRIS</option></select></label>
-          <label><span>Status</span><select id="transaction-status"><option value="">Semua status</option><option value="new">Baru</option><option value="making">Dibuat</option><option value="ready">Siap</option><option value="done">Selesai</option></select></label>
-          <button id="reset-transaction-filter">Reset</button>
-        </div>
-        <div class="content-card">
-          <div class="card-header"><div><h3>Daftar transaksi</h3><p id="transaction-result-label">0 transaksi ditemukan</p></div><strong class="history-total" id="transaction-filter-total">Rp0</strong></div>
-          <div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Order</th><th>Kasir</th><th>Pelanggan</th><th>Jumlah</th><th>Pembayaran</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody id="transaction-table"></tbody></table></div>
-        </div>
-      </section>
-
       <section class="view" id="view-reports">
         <div class="section-toolbar">
           <div><span class="hand-label">KONTROL OPERASIONAL</span><h2>Laporan usaha</h2><p id="report-period-label">Performa outlet sampai pukul <span id="report-time">14.32</span></p></div>
-          <div class="toolbar-group"><button class="secondary-button" id="attendance-manage">◷ Kehadiran</button><button class="secondary-button" id="payroll-payment">✓ Bayar gaji</button><button class="secondary-button" id="payroll-settings">⚙ Atur gaji</button><button class="secondary-button" id="report-add-expense">＋ Catat belanja</button><button class="primary-small" id="export-report">⇩ Ekspor CSV</button></div>
+          <div class="toolbar-group"><button class="secondary-button" id="attendance-manage">◷ Hari kerja</button><button class="secondary-button" id="payroll-payment">✓ Bayar gaji</button><button class="secondary-button" id="payroll-settings">⚙ Atur gaji</button><button class="secondary-button" id="shift-location-settings">◎ Lokasi shift</button><button class="secondary-button" id="report-add-expense">＋ Catat belanja</button><button class="primary-small" id="export-report">⇩ Ekspor CSV</button></div>
         </div>
         <div class="report-filter-card">
           <div class="report-presets"><button data-report-preset="today" class="active">Hari ini</button><button data-report-preset="yesterday">Kemarin</button><button data-report-preset="7days">7 hari</button><button data-report-preset="month">Bulan ini</button></div>
@@ -187,15 +152,7 @@
         </div>
         <div class="report-grid finance-row">
           <div class="content-card"><div class="card-header"><div><h3>Ringkasan laba & arus kas</h3><p>HPP sudah mencakup bonus pekerja dari resep</p></div></div><div class="finance-summary" id="report-finance"></div></div>
-          <div class="content-card"><div class="card-header"><div><h3>Gaji & bonus karyawan</h3><p>Hak, pembayaran, dan sisa kewajiban per karyawan</p></div><strong class="history-total" id="payroll-total">Rp0</strong></div><div class="table-wrap compact-report-table"><table class="payroll-report-table"><thead><tr><th>Karyawan</th><th>Hari</th><th>Cup</th><th>Gaji pokok</th><th>Bonus*</th><th>Total hak</th><th>Sudah dibayar</th><th>Sisa</th><th>Status</th></tr></thead><tbody id="payroll-table"></tbody></table></div><p class="table-footnote">* Bonus dihitung dari seluruh cup kasir pada periode, sehingga tidak berubah ketika laporan penjualan difilter berdasarkan Tunai atau QRIS.</p></div>
-        </div>
-        <div class="content-card daily-report-card">
-          <div class="card-header"><div><h3>Perbandingan transaksi harian</h3><p>Omzet, biaya, dan hasil bersih per tanggal</p></div><span class="comparison-note">Dibanding hari sebelumnya</span></div>
-          <div class="table-wrap"><table class="daily-report-table"><thead><tr><th>Tanggal</th><th>Transaksi</th><th>Cup</th><th>Omzet</th><th>Vs hari lalu</th><th>HPP incl. bonus</th><th>Gaji pokok</th><th>Bonus hak</th><th>Belanja stok</th><th>Gaji dibayar</th><th>Laba operasional</th><th>Arus kas aktual</th></tr></thead><tbody id="daily-report-table"></tbody></table></div>
-        </div>
-        <div class="content-card purchase-report-card">
-          <div class="card-header"><div><h3>Beban belanja stok</h3><p>Nominal aktual dari pencatatan stok masuk</p></div><strong class="history-total" id="purchase-total">Rp0</strong></div>
-          <div class="table-wrap compact-report-table"><table><thead><tr><th>Waktu</th><th>Item</th><th>Jumlah masuk</th><th>Referensi</th><th>Dicatat oleh</th><th>Nominal</th><th></th></tr></thead><tbody id="purchase-report-table"></tbody></table></div>
+          <div class="content-card"><div class="card-header"><div><h3>Gaji & bonus karyawan</h3><p>Hak, pembayaran, dan sisa kewajiban per karyawan</p></div><strong class="history-total" id="payroll-total">Rp0</strong></div><div class="table-wrap compact-report-table"><table class="payroll-report-table"><thead><tr><th>Karyawan</th><th>Hari</th><th>Cup</th><th>Gaji pokok</th><th>Bonus*</th><th>Total hak</th><th>Sudah dibayar</th><th>Sisa</th><th>Status</th></tr></thead><tbody id="payroll-table"></tbody></table></div><p class="table-footnote">* Bonus dihitung dari seluruh cup kasir pada periode, sehingga tidak berubah ketika laporan penjualan difilter berdasarkan Tunai atau QRIS. Sysadmin dapat memakai metode manual sebagai cadangan melalui <strong>Atur gaji</strong>; satu hari kerja standar 09.00–16.00 WIB.</p></div>
         </div>
         <div class="report-grid lower">
           <div class="content-card"><div class="card-header"><div><h3>Metode pembayaran</h3><p>Distribusi nilai transaksi</p></div></div><div class="payment-breakdown" id="payment-breakdown"></div></div>

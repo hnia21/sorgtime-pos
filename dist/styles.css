@@ -900,6 +900,9 @@ button { border-radius: 0; }
 .comparison-chip.up { background: var(--green-soft); color: var(--green); }
 .comparison-chip.down { background: #f6d9d5; color: var(--danger); }
 .negative-value, .missing-cost { color: var(--danger); }
+.positive-value { color: var(--green); }
+.checkbox-line { display: inline-flex !important; align-items: center; gap: 8px; font-size: 9px !important; letter-spacing: 0; text-transform: none; }
+.checkbox-line input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brand); }
 .missing-cost { font-size: 8px; }
 .purchase-edit { height: 28px; padding: 0 9px; border: 1px solid var(--ink); background: var(--paper); cursor: pointer; font-size: 8px; font-weight: 800; text-transform: uppercase; }
 .payroll-formula { margin: 15px 0; padding: 12px; border: 1px solid var(--ink); background: var(--green-soft); display: grid; gap: 5px; }

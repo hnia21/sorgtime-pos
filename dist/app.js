@@ -147,9 +147,11 @@ if (state.hppVersion < 2) {
 state.recipes ||= [];
 state.shifts ||= [];
 state.activeShiftId ||= null;
-state.payrollSettings ||= { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000 };
+state.payrollSettings = { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000, mode: 'auto', workStart: '09:00', workEnd: '16:00', ...(state.payrollSettings || {}) };
 state.attendance ||= [];
 state.payrollPayments ||= [];
+state.payrollManual ||= [];
+state.shiftLocation = { enabled: false, label: '', latitude: null, longitude: null, radius: 50, ...(state.shiftLocation || {}) };
 state.recipes.forEach(recipe => recipe.components.forEach(component => { if (!component.costType && /^(pekerja|bonus|tenaga kerja)$/i.test(String(component.name).trim())) component.costType = 'labor-per-cup'; }));
 state.orders.forEach((order, index) => {
   order.uid ||= `legacy-${order.created || index}-${order.id}`;
@@ -193,8 +195,8 @@ const ROLE_DESCRIPTIONS = {
   barista: 'Membuat pesanan, menerima pembayaran, dan mengelola antrean produksi.'
 };
 const ROLE_PERMISSIONS = {
-  sysadmin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
-  admin: ['pos','kds','inventory','customers','transactions','reports','payslip','accounts'],
+  sysadmin: ['pos','kds','inventory','reports','payslip','accounts'],
+  admin: ['pos','kds','inventory','reports','payslip','accounts'],
   barista: ['pos','kds','payslip']
 };
 let authUsers = authBackendReady
@@ -342,6 +344,7 @@ function applyPermissions() {
   $('#attendance-manage').hidden = !isSysadmin();
   $('#payroll-payment').hidden = !isSysadmin();
   $('#payroll-settings').hidden = !isSysadmin();
+  $('#shift-location-settings').hidden = !isSysadmin();
 }
 
 function unlockApp(user) {
@@ -684,7 +687,7 @@ function showCustomerForm() {
   $('#customer-form').addEventListener('submit', e => {
     e.preventDefault(); const fd = new FormData(e.target); const name = fd.get('name').trim();
     const customer = { id: Date.now(), name, phone: (fd.get('phone') || '').trim(), createdAt: Date.now(), visits: 0, spent: 0, points: 0, tier: 'Member', initials: name.split(/\s+/).map(x => x[0]).join('').slice(0,2).toUpperCase(), bg: '#eadfd6', fg: '#604a3e' };
-    state.customers.unshift(customer); state.selectedCustomer = customer; closeModal(); renderCart(); renderCustomers(); toast('Member baru berhasil dibuat', '♙');
+    state.customers.unshift(customer); state.selectedCustomer = customer; closeModal(); renderCart(); toast('Member baru berhasil dibuat', '♙');
   });
 }
 
@@ -964,14 +967,26 @@ function dailyBasePay(dateKey) {
   const [year, month] = dateKey.split('-').map(Number); const daysInMonth = new Date(year, month, 0).getDate(); const workDays = Math.max(1, daysInMonth - Number(state.payrollSettings.monthlyOffDays || 0));
   return Number(state.payrollSettings.monthlyBase || 0) / workDays;
 }
+function payrollManualFor(userId, from, to) {
+  if (!userId) return null;
+  return (state.payrollManual || []).find(entry => entry.userId === userId && entry.periodFrom === from && entry.periodTo === to) || null;
+}
 function reportPayroll(dateKeys, cashierFilter = '', sourceOrders = null) {
-  const allowed = new Set(dateKeys); const records = new Map();
+  const allowed = new Set(dateKeys); const records = new Map(); const periodFrom = dateKeys[0] || jakartaDateKey(); const periodTo = dateKeys[dateKeys.length - 1] || periodFrom;
   const getRecord = (id, name) => { const user = authUsers.find(entry => entry.id === id); const key = id || `name:${name}`; if (!records.has(key)) records.set(key, { id, name: name || user?.name || 'Tanpa nama', role: user?.role || 'admin', days: new Set(), cupsByDay: new Map() }); return records.get(key); };
   authUsers.filter(user => user.status !== 'inactive' && (!cashierFilter || user.name === cashierFilter)).forEach(user => getRecord(user.id, user.name));
   (sourceOrders || state.orders).filter(order => allowed.has(jakartaDateKey(order.created)) && (!cashierFilter || order.cashier === cashierFilter)).forEach(order => { const day = jakartaDateKey(order.created); const userId = order.cashierId || authUsers.find(user => user.name === order.cashier)?.id || null; const record = getRecord(userId, order.cashier); record.days.add(day); record.cupsByDay.set(day, (record.cupsByDay.get(day) || 0) + orderCupCount(order)); });
   state.shifts.filter(shift => allowed.has(jakartaDateKey(shift.startedAt)) && (!cashierFilter || shift.startedBy === cashierFilter)).forEach(shift => getRecord(shift.startedById, shift.startedBy).days.add(jakartaDateKey(shift.startedAt)));
   state.attendance.filter(entry => allowed.has(entry.date)).forEach(entry => { const user = authUsers.find(item => item.id === entry.userId); if (!user || (cashierFilter && user.name !== cashierFilter)) return; const record = getRecord(user.id, user.name); if (entry.status === 'present') record.days.add(entry.date); else record.days.delete(entry.date); });
-  return [...records.values()].map(record => { const cups = [...record.cupsByDay.values()].reduce((sum, value) => sum + value, 0); const basePay = [...record.days].reduce((sum, day) => sum + dailyBasePay(day), 0); const bonus = cups * Number(state.payrollSettings.cupBonus || 0); return { ...record, workDays: record.days.size, cups, basePay, bonus, total: basePay + bonus }; }).sort((a, b) => b.total - a.total);
+  return [...records.values()].map(record => {
+    const cups = [...record.cupsByDay.values()].reduce((sum, value) => sum + value, 0);
+    const autoBasePay = [...record.days].reduce((sum, day) => sum + dailyBasePay(day), 0);
+    const autoBonus = cups * Number(state.payrollSettings.cupBonus || 0);
+    const manual = state.payrollSettings.mode === 'manual' ? payrollManualFor(record.id, periodFrom, periodTo) : null;
+    const basePay = manual ? Math.max(0, Number(manual.basePay || 0)) : autoBasePay;
+    const bonus = manual ? Math.max(0, Number(manual.bonus || 0)) : autoBonus;
+    return { ...record, workDays: record.days.size, cups, autoBasePay, autoBonus, autoTotal: autoBasePay + autoBonus, basePay, bonus, total: basePay + bonus, manual: Boolean(manual), manualNote: manual?.note || '' };
+  }).sort((a, b) => b.total - a.total);
 }
 function reportData() {
   ensureReportFilters(); let from = $('#report-date-from').value; let to = $('#report-date-to').value; if (from > to) [from, to] = [to, from];
@@ -1001,11 +1016,9 @@ function renderReports() {
   $('#sales-chart-title').textContent = singleDay ? 'Penjualan per jam' : 'Penjualan harian'; $('#sales-chart-subtitle').textContent = singleDay ? 'Tren transaksi sepanjang hari' : `Perbandingan ${data.dateKeys.length} hari terpilih`; $('#bar-chart').classList.toggle('daily-range', !singleDay); const maxChart = Math.max(...chartRows.map(row => row.value), 1); $('#bar-chart').innerHTML = chartRows.map(row => `<div class="bar-group"><div class="bar" style="height:${row.value ? Math.max(8, row.value / maxChart * 100) : 0}%" data-value="${rupiah(row.value)}"></div><span>${row.label}</span></div>`).join('');
   const soldCounts = new Map(); data.orders.flatMap(order => order.items).forEach(item => soldCounts.set(String(item.productId), (soldCounts.get(String(item.productId)) || 0) + Number(item.qty || 0))); const ranking = products.map(product => ({ ...product, sold: soldCounts.get(String(product.id)) || 0 })).filter(product => product.sold).sort((a,b)=>b.sold-a.sold).slice(0,5); $('#ranking-list').innerHTML = ranking.length ? ranking.map((product,index)=>`<div class="rank-row"><span class="rank-number">${index+1}</span><span class="rank-thumb"><img src="${product.image}" alt=""></span><div><h4>${escapeHTML(product.name)}</h4><p>${escapeHTML(product.category)}</p></div><strong>${product.sold}</strong></div>`).join('') : `<div class="empty-inline"><strong>Belum ada penjualan</strong><span>Tidak ada menu terjual pada filter ini.</span></div>`;
   const financeRows = [['LAPORAN LABA',null,'section'],['Omzet penjualan',data.revenue,'income'],['HPP produk (termasuk bonus)',-data.hpp,'cost'],['Porsi bonus di dalam HPP',data.hppBonusIncluded,'included'],['Laba kotor',data.grossProfit,'subtotal'],['Gaji pokok',-data.basePayTotal,'cost']]; if (Math.abs(data.bonusHppAdjustment) > 1) financeRows.push(['Penyesuaian bonus vs HPP',-data.bonusHppAdjustment,data.bonusHppAdjustment > 0 ? 'cost' : 'credit']); financeRows.push(['Laba operasional',data.operating,'grand'],['ARUS KAS AKTUAL',null,'section'],['Penerimaan penjualan (semua metode)',data.cashRevenue,'income'],['Belanja stok dibayar',-data.purchaseTotal,'cost'],['Gaji & bonus sudah dibayar',-data.payrollPaidTotal,'cost'],['Perubahan kas bersih',data.cashNet,'cash-grand'],['ESTIMASI SETELAH KEWAJIBAN',null,'section'],['Hak gaji & bonus periode',-data.payrollTotal,'cost'],['Sisa kas setelah seluruh hak dibayar',data.projectedCash,'cash-grand']); $('#report-finance').innerHTML = financeRows.map(([label,value,kind])=>kind === 'section' ? `<div class="finance-section"><strong>${label}</strong></div>` : `<div class="${kind}"><span>${label}</span><strong>${value < 0 ? '−' : ''}${rupiah(Math.abs(value))}</strong></div>`).join('');
-  $('#payroll-total').textContent = `${rupiah(data.payrollRemainingTotal)} sisa`; $('#payroll-table').innerHTML = data.payroll.length ? data.payroll.map(row => { const label = row.paymentStatus === 'paid' ? 'Lunas' : row.paymentStatus === 'partial' ? 'Sebagian' : 'Belum dibayar'; return `<tr><td><strong>${escapeHTML(row.name)}</strong><small>${escapeHTML(ROLE_LABELS[row.role] || row.role)}</small></td><td>${row.workDays}</td><td>${row.cups}</td><td>${rupiah(row.basePay)}</td><td>${rupiah(row.bonus)}</td><td><strong>${rupiah(row.total)}</strong></td><td>${rupiah(row.paid)}</td><td><strong>${rupiah(row.remaining)}</strong>${row.overpaid ? `<small>Lebih ${rupiah(row.overpaid)}</small>` : ''}</td><td><span class="payroll-status ${row.paymentStatus}">${label}</span></td></tr>`; }).join('') : '<tr><td colspan="9"><div class="empty-table"><strong>Belum ada data kehadiran</strong><span>Catat kehadiran karyawan atau buka shift untuk memulai perhitungan.</span></div></td></tr>';
-  $('#daily-report-table').innerHTML = data.days.map((row, index) => { const previous = index ? data.days[index - 1].revenue : state.orders.filter(order => jakartaDateKey(order.created) === shiftDateKey(row.day, -1) && (!data.cashier || order.cashier === data.cashier) && (!data.payment || order.payment === data.payment)).reduce((sum, order) => sum + Number(order.total || 0), 0); const comparison = changeLabel(row.revenue, previous); return `<tr><td><strong>${new Intl.DateTimeFormat('id-ID',{weekday:'short',day:'2-digit',month:'short',timeZone:'Asia/Jakarta'}).format(dateFromKey(row.day))}</strong></td><td>${row.transactions}</td><td>${row.cups}</td><td><strong>${rupiah(row.revenue)}</strong></td><td><span class="comparison-chip ${comparison.startsWith('↓') ? 'down' : comparison.startsWith('↑') ? 'up' : ''}">${comparison}</span></td><td>${rupiah(row.hpp)}</td><td>${rupiah(row.basePay)}</td><td>${rupiah(row.bonus)}</td><td>${rupiah(row.purchases)}</td><td>${rupiah(row.payrollPaid)}</td><td><strong class="${row.operating < 0 ? 'negative-value' : ''}">${rupiah(row.operating)}</strong></td><td><strong class="${row.cashNet < 0 ? 'negative-value' : ''}">${rupiah(row.cashNet)}</strong></td></tr>`; }).join('');
-  $('#purchase-total').textContent = rupiah(data.purchaseTotal); $('#purchase-report-table').innerHTML = data.purchases.length ? data.purchases.sort((a,b)=>b.createdAt-a.createdAt).map(movement => { const ingredient = state.inventory.find(item => String(item.id) === String(movement.ingredientId)); const user = authUsers.find(item => item.id === movement.userId); return `<tr><td>${transactionDateTime(movement.createdAt)}</td><td><strong>${escapeHTML(ingredient?.name || 'Item dihapus')}</strong></td><td>${formatQuantity(movement.amount, ingredient?.unit || '')}</td><td>${escapeHTML(movement.reference || '—')}</td><td>${escapeHTML(user?.name || 'Sistem')}</td><td><strong>${movement.purchaseCost == null ? '<span class="missing-cost">Belum dicatat</span>' : rupiah(movement.purchaseCost)}</strong></td><td><button class="purchase-edit" data-purchase-edit="${movement.id}">Edit</button></td></tr>`; }).join('') : '<tr><td colspan="7"><div class="empty-table"><strong>Belum ada beban belanja</strong><span>Gunakan Catat belanja atau Tambah stok untuk memasukkan pembelian.</span></div></td></tr>';
+  $('#payroll-total').textContent = `${rupiah(data.payrollRemainingTotal)} sisa`; $('#payroll-table').innerHTML = data.payroll.length ? data.payroll.map(row => { const label = row.paymentStatus === 'paid' ? 'Lunas' : row.paymentStatus === 'partial' ? 'Sebagian' : 'Belum dibayar'; return `<tr><td><strong>${escapeHTML(row.name)}</strong><small>${escapeHTML(ROLE_LABELS[row.role] || row.role)}${row.manual ? ' · Manual' : ''}</small></td><td>${row.workDays}</td><td>${row.cups}</td><td>${rupiah(row.basePay)}</td><td>${rupiah(row.bonus)}</td><td><strong>${rupiah(row.total)}</strong></td><td>${rupiah(row.paid)}</td><td><strong>${rupiah(row.remaining)}</strong>${row.overpaid ? `<small>Lebih ${rupiah(row.overpaid)}</small>` : ''}</td><td><span class="payroll-status ${row.paymentStatus}">${label}</span></td></tr>`; }).join('') : '<tr><td colspan="9"><div class="empty-table"><strong>Belum ada data kehadiran</strong><span>Catat kehadiran karyawan atau buka shift untuk memulai perhitungan.</span></div></td></tr>';
   const cash = data.orders.filter(order => order.payment === 'Tunai').reduce((sum,order)=>sum+Number(order.total||0),0); const qris = data.orders.filter(order => order.payment === 'QRIS').reduce((sum,order)=>sum+Number(order.total||0),0); const totalPayment = cash + qris; const cashPct = totalPayment ? Math.round(cash / totalPayment * 100) : 0; const qrisPct = totalPayment ? 100 - cashPct : 0; $('#payment-breakdown').innerHTML = `<div class="payment-total"><div class="donut" style="background:${totalPayment ? `conic-gradient(var(--brand) 0 ${qrisPct}%, #d8a779 ${qrisPct}% 100%)` : '#ded6cb'}"></div><div class="payment-legend"><div class="payment-item"><i style="--color:var(--brand)"></i><span>QRIS</span><strong>${qrisPct}% · ${rupiah(qris)}</strong></div><div class="payment-item"><i style="--color:#d8a779"></i><span>Tunai</span><strong>${cashPct}% · ${rupiah(cash)}</strong></div></div></div>`;
-  const latestClosedShift = [...state.shifts].filter(shift => shift.endedAt).sort((a, b) => b.endedAt - a.endedAt)[0]; const missingCosts = data.purchases.filter(row => row.purchaseCost == null).length; $('#health-list').innerHTML = [['◷','Status shift',isShiftActive()?'Aktif':'Tutup'],['✓','Selisih shift terakhir',latestClosedShift ? rupiah(latestClosedShift.cashDifference || 0) : '—'],['♙','Sisa kewajiban gaji',rupiah(data.payrollRemainingTotal)],['!','Cup tanpa HPP',`${data.missingHppCups} cup`],['!','Belanja tanpa nominal',`${missingCosts} catatan`],['↺','Status sinkronisasi',state.networkOnline?'Tersinkron':'Antre offline']].map(row=>`<div class="health-row"><span class="health-label"><i>${row[0]}</i><span>${row[1]}</span></span><strong>${row[2]}</strong></div>`).join('');
+  const latestClosedShift = [...state.shifts].filter(shift => shift.endedAt).sort((a, b) => b.endedAt - a.endedAt)[0]; const payrollModeLabel = state.payrollSettings.mode === 'manual' ? 'Manual' : 'Otomatis'; $('#health-list').innerHTML = [['◷','Status shift',isShiftActive()?'Aktif':'Tutup'],['✓','Selisih shift terakhir',latestClosedShift ? rupiah(latestClosedShift.cashDifference || 0) : '—'],['♙','Sisa kewajiban gaji',rupiah(data.payrollRemainingTotal)],['◎','Metode gaji',payrollModeLabel],['◷','Jam kerja',`${state.payrollSettings.workStart || '09:00'}–${state.payrollSettings.workEnd || '16:00'} WIB`],['!','Cup tanpa HPP',`${data.missingHppCups} cup`],['↺','Status sinkronisasi',state.networkOnline?'Tersinkron':'Antre offline']].map(row=>`<div class="health-row"><span class="health-label"><i>${row[0]}</i><span>${row[1]}</span></span><strong>${row[2]}</strong></div>`).join('');
 }
 
 function payslipMonth() {
@@ -1034,11 +1047,12 @@ function payslipData(month = payslipMonth()) {
     .sort((a, b) => String(b.paidDate || '').localeCompare(String(a.paidDate || '')) || Number(b.createdAt || 0) - Number(a.createdAt || 0));
   const paid = payments.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
   const cupBonus = Number(state.payrollSettings.cupBonus || 0);
+  const manualBasePerDay = mine.manual && mine.workDays ? mine.basePay / mine.workDays : null;
   const days = keys.map(day => {
     const cups = mine.cupsByDay.get(day) || 0;
-    return { day, cups, present: mine.days.has(day), basePay: mine.days.has(day) ? dailyBasePay(day) : 0, bonus: cups * cupBonus };
+    return { day, cups, present: mine.days.has(day), basePay: mine.days.has(day) ? (manualBasePerDay ?? dailyBasePay(day)) : 0, bonus: cups * cupBonus };
   });
-  return { from, to, mine, payments, paid, total: mine.total, remaining: Math.max(0, mine.total - paid), overpaid: Math.max(0, paid - mine.total), cupBonus, days };
+  return { from, to, mine, payments, paid, total: mine.total, remaining: Math.max(0, mine.total - paid), overpaid: Math.max(0, paid - mine.total), cupBonus, days, workStart: state.payrollSettings.workStart || '09:00', workEnd: state.payrollSettings.workEnd || '16:00' };
 }
 
 function payslipMonthLabel(from) {
@@ -1081,7 +1095,7 @@ function renderPayslip() {
           <div class="payslip-line paid"><span>Sudah dibayar</span><strong>${rupiah(data.paid)}</strong></div>
           <div class="payslip-line remaining ${data.overpaid ? 'overpaid' : ''}"><span>${data.overpaid ? 'Kelebihan bayar' : 'Sisa hak'}</span><strong>${rupiah(data.overpaid || data.remaining)}</strong></div>
         </div>
-        <div class="payslip-note">Gaji pokok ${rupiah(monthlyBase)} per bulan dibagi ${workDaysInMonth} hari kerja (${monthlyOffDays} hari libur). Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. Kehadiran diambil otomatis dari shift atau transaksi.</div>
+        <div class="payslip-note">Gaji pokok ${rupiah(monthlyBase)} per bulan dibagi ${workDaysInMonth} hari kerja (${monthlyOffDays} hari libur). Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. Kehadiran diambil otomatis dari shift atau transaksi. Jam kerja ${data.workStart}–${data.workEnd} WIB. ${data.mine.manual ? 'Nominal slip mengikuti pengaturan manual sysadmin.' : 'Perhitungan menggunakan metode otomatis.'}${data.mine.manualNote ? ` Catatan: ${escapeHTML(data.mine.manualNote)}.` : ''}</div>
       </div>
       <div class="payslip-side">
         <div class="content-card">
@@ -1132,7 +1146,7 @@ function payslipPrintHTML(data, monthLabel) {
       <tr><td colspan="2">Sudah dibayar</td><td class="num">${rupiah(data.paid)}</td></tr>
       <tr class="remaining"><td colspan="2">${data.overpaid ? 'Kelebihan bayar' : 'Sisa hak'}</td><td class="num">${rupiah(data.overpaid || data.remaining)}</td></tr>
     </tbody></table>
-    <div class="note">Gaji pokok dihitung dari kehadiran (shift/transaksi). Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. Slip ini dihasilkan otomatis oleh Sorgtime POS${data.payments.length ? ` dan mencakup ${data.payments.length} pembayaran.` : '.'}</div>
+    <div class="note">Gaji pokok dihitung dari kehadiran (shift/transaksi) dengan jam kerja ${data.workStart}–${data.workEnd} WIB. Bonus dihitung ${rupiah(data.cupBonus)} per cup minuman. ${data.mine.manual ? 'Nominal mengikuti pengaturan manual sysadmin.' : 'Slip ini dihasilkan otomatis oleh Sorgtime POS.'}${data.payments.length ? ` Mencakup ${data.payments.length} pembayaran.` : ''}${data.mine.manualNote ? ` Catatan: ${escapeHTML(data.mine.manualNote)}.` : ''}</div>
     <div class="sign"><div><span>Karyawan</span></div><div><span>Pengelola</span></div></div>
   </div></body></html>`;
 }
@@ -1153,25 +1167,107 @@ function setReportPreset(preset) {
   const today = jakartaDateKey(); let from = today; let to = today;
   if (preset === 'yesterday') from = to = shiftDateKey(today, -1);
   if (preset === '7days') from = shiftDateKey(today, -6);
-  if (preset === 'month') from = `${today.slice(0, 8)}01`;
+  if (preset === 'month') { const [year, month] = today.split('-').map(Number); from = `${today.slice(0, 8)}01`; to = `${today.slice(0, 8)}${String(new Date(year, month, 0).getDate()).padStart(2, '0')}`; }
   $('#report-date-from').value = from; $('#report-date-to').value = to; $$('[data-report-preset]').forEach(button => button.classList.toggle('active', button.dataset.reportPreset === preset)); renderReports();
 }
 
 function showPayrollSettings() {
   if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengubah pengaturan penggajian', '!');
-  const settings = state.payrollSettings;
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Atur gaji & bonus</h2><p>Dasar perhitungan beban karyawan pada laporan</p></div><button class="modal-close">×</button></div><form id="payroll-settings-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Gaji pokok bulanan (Rp)</label><input name="monthlyBase" type="number" min="0" step="10000" required value="${Number(settings.monthlyBase || 0)}"></div><div class="field"><label>Hari libur per bulan</label><input name="monthlyOffDays" type="number" min="0" max="30" step="1" required value="${Number(settings.monthlyOffDays || 0)}"></div><div class="field full"><label>Bonus per cup (Rp)</label><input name="cupBonus" type="number" min="0" step="500" required value="${Number(settings.cupBonus || 0)}"></div></div><div class="payroll-formula"><strong>Rumus yang digunakan</strong><span>Gaji harian = gaji bulanan ÷ (jumlah hari dalam bulan − hari libur)</span><span>Bonus harian = jumlah cup minuman kasir × bonus per cup</span></div><div class="notice">Kehadiran diambil dari pembukaan shift atau transaksi kasir. Produk retail tidak dihitung sebagai cup. Jika komponen Pekerja sudah ada di HPP, laporan hanya merekonsiliasi selisihnya dan tidak membebankan bonus dua kali.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan pengaturan</button></div></form>`);
-  $('#payroll-settings-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const monthlyBase = Math.max(0, Number(form.get('monthlyBase')) || 0); const monthlyOffDays = Math.max(0, Math.min(30, Number(form.get('monthlyOffDays')) || 0)); const cupBonus = Math.max(0, Number(form.get('cupBonus')) || 0); state.payrollSettings = { monthlyBase, monthlyOffDays, cupBonus }; save(); closeModal(); renderReports(); toast('Pengaturan gaji dan bonus diperbarui', '◎'); });
+  const settings = { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000, mode: 'auto', workStart: '09:00', workEnd: '16:00', ...state.payrollSettings };
+  const data = reportData();
+  const manualMonth = data.to.slice(0, 7);
+  const [manualYear, manualMonthNumber] = manualMonth.split('-').map(Number);
+  const manualFrom = `${manualMonth}-01`;
+  const manualTo = `${manualMonth}-${String(new Date(manualYear, manualMonthNumber, 0).getDate()).padStart(2, '0')}`;
+  const manualKeys = reportDateKeys(manualFrom, manualTo);
+  const employees = reportPayroll(manualKeys).filter(row => row.id);
+  const manualRows = employees.map(row => {
+    const override = payrollManualFor(row.id, manualFrom, manualTo);
+    return { ...row, manualBase: override ? Number(override.basePay || 0) : Math.round(row.autoBasePay), manualBonus: override ? Number(override.bonus || 0) : Math.round(row.autoBonus), manualNote: override?.note || '' };
+  });
+  const manualTable = manualRows.length ? `<div class="table-wrap modal-record-table"><table><thead><tr><th>Karyawan</th><th>Nilai otomatis</th><th>Gaji pokok manual (Rp)</th><th>Bonus manual (Rp)</th><th>Catatan</th></tr></thead><tbody>${manualRows.map(row => `<tr><td><strong>${escapeHTML(row.name)}</strong><small>${escapeHTML(ROLE_LABELS[row.role] || row.role)} · ${row.workDays} hari</small></td><td>${rupiah(row.autoTotal)}<small>pokok ${rupiah(row.autoBasePay)} · bonus ${rupiah(row.autoBonus)}</small></td><td><input name="manualBase-${row.id}" type="number" min="0" step="any" value="${row.manualBase}"></td><td><input name="manualBonus-${row.id}" type="number" min="0" step="any" value="${row.manualBonus}"></td><td><input name="manualNote-${row.id}" maxlength="80" value="${escapeHTML(row.manualNote)}" placeholder="Opsional"></td></tr>`).join('')}</tbody></table></div>` : '<div class="notice">Belum ada karyawan aktif pada periode ini.</div>';
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Atur gaji & bonus</h2><p>Metode otomatis atau manual untuk periode bulanan ${manualFrom} s.d. ${manualTo}</p></div><button class="modal-close">×</button></div><form id="payroll-settings-form"><div class="modal-body">
+    <div class="form-grid">
+      <div class="field"><label>Gaji pokok bulanan (Rp)</label><input name="monthlyBase" type="number" min="0" step="10000" required value="${Number(settings.monthlyBase || 0)}"></div>
+      <div class="field"><label>Hari libur per bulan</label><input name="monthlyOffDays" type="number" min="0" max="30" step="1" required value="${Number(settings.monthlyOffDays || 0)}"></div>
+      <div class="field"><label>Bonus per cup (Rp)</label><input name="cupBonus" type="number" min="0" step="500" required value="${Number(settings.cupBonus || 0)}"></div>
+      <div class="field"><label>Jam mulai kerja</label><input name="workStart" type="time" required value="${escapeHTML(settings.workStart || '09:00')}"></div>
+      <div class="field"><label>Jam selesai kerja</label><input name="workEnd" type="time" required value="${escapeHTML(settings.workEnd || '16:00')}"></div>
+      <div class="field full"><label>Metode perhitungan gaji</label><select name="mode" id="payroll-mode"><option value="auto" ${settings.mode === 'auto' ? 'selected' : ''}>Otomatis — dari kehadiran, shift, dan cup</option><option value="manual" ${settings.mode === 'manual' ? 'selected' : ''}>Manual — nominal ditentukan sysadmin</option></select></div>
+    </div>
+    <div class="payroll-formula"><strong>Rumus otomatis</strong><span>Gaji harian = gaji bulanan ÷ (jumlah hari dalam bulan − hari libur)</span><span>Bonus harian = jumlah cup minuman kasir × bonus per cup</span><span>Jam kerja standar: ${escapeHTML(settings.workStart || '09:00')}–${escapeHTML(settings.workEnd || '16:00')} WIB</span></div>
+    <div id="payroll-manual-block">
+      <div class="notice">Mode manual dipakai sebagai cadangan saat data otomatis bermasalah. Nilai di bawah berlaku untuk periode bulanan ${manualFrom} s.d. ${manualTo}. Karyawan tanpa nominal manual tetap memakai nilai otomatis.</div>
+      <div class="toolbar-group" style="margin:12px 0"><button type="button" class="secondary-button" id="payroll-fill-auto">Isi dengan nilai otomatis</button></div>
+      ${manualTable}
+    </div>
+    <div class="notice">Kehadiran diambil dari pembukaan shift atau transaksi kasir. Produk retail tidak dihitung sebagai cup. Jika komponen Pekerja sudah ada di HPP, laporan hanya merekonsiliasi selisihnya dan tidak membebankan bonus dua kali.</div>
+  </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan pengaturan</button></div></form>`, true);
+  const toggleMode = () => { $('#payroll-manual-block').hidden = $('#payroll-mode').value !== 'manual'; };
+  $('#payroll-mode').addEventListener('change', toggleMode); toggleMode();
+  $('#payroll-fill-auto')?.addEventListener('click', () => {
+    manualRows.forEach(row => {
+      const base = $(`[name="manualBase-${row.id}"]`, $('#modal')); const bonus = $(`[name="manualBonus-${row.id}"]`, $('#modal'));
+      if (base) base.value = Math.round(row.autoBasePay); if (bonus) bonus.value = Math.round(row.autoBonus);
+    });
+  });
+  $('#payroll-settings-form').addEventListener('submit', event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const monthlyBase = Math.max(0, Number(form.get('monthlyBase')) || 0);
+    const monthlyOffDays = Math.max(0, Math.min(30, Number(form.get('monthlyOffDays')) || 0));
+    const cupBonus = Math.max(0, Number(form.get('cupBonus')) || 0);
+    const mode = form.get('mode') === 'manual' ? 'manual' : 'auto';
+    const workStart = form.get('workStart') || '09:00';
+    const workEnd = form.get('workEnd') || '16:00';
+    state.payrollSettings = { monthlyBase, monthlyOffDays, cupBonus, mode, workStart, workEnd };
+    state.payrollManual = (state.payrollManual || []).filter(entry => !(entry.periodFrom === manualFrom && entry.periodTo === manualTo));
+    if (mode === 'manual') {
+      manualRows.forEach(row => {
+        const basePay = Math.max(0, Number(form.get(`manualBase-${row.id}`)) || 0);
+        const bonus = Math.max(0, Number(form.get(`manualBonus-${row.id}`)) || 0);
+        const note = String(form.get(`manualNote-${row.id}`) || '').trim();
+        if (basePay || bonus || note) state.payrollManual.push({ id: crypto.randomUUID(), userId: row.id, periodFrom: manualFrom, periodTo: manualTo, basePay, bonus, note, updatedAt: Date.now(), updatedBy: currentUser.id });
+      });
+    }
+    save(); closeModal(); renderReports(); renderPayslip();
+    toast(mode === 'manual' ? 'Gaji manual periode ini disimpan' : 'Gaji otomatis diaktifkan', '◎');
+  });
 }
 
 function showAttendanceManager() {
-  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengelola kehadiran dan penggajian', '!');
+  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengelola hari kerja', '!');
   const data = reportData(); const users = authUsers.filter(user => user.status !== 'inactive');
   if (!users.length) return toast('Buat akun karyawan terlebih dahulu', '!');
+  const payrollRows = reportPayroll(data.dateKeys).filter(row => row.id);
   const entries = state.attendance.filter(entry => entry.date >= data.from && entry.date <= data.to).sort((a, b) => b.date.localeCompare(a.date));
+  const workStart = state.payrollSettings.workStart || '09:00'; const workEnd = state.payrollSettings.workEnd || '16:00';
+  const summaryRows = users.map(user => {
+    const row = payrollRows.find(item => item.id === user.id) || { workDays: 0, cups: 0 };
+    return `<tr><td><strong>${escapeHTML(user.name)}</strong><small>${escapeHTML(ROLE_LABELS[user.role] || user.role)}</small></td><td><strong>${row.workDays}</strong> hari</td><td>${row.cups} cup</td><td><input type="date" data-workday-date="${user.id}" min="${data.from}" max="${data.to}" value="${data.to}"></td><td><button type="button" class="purchase-edit" data-add-workday="${user.id}">＋ Tambah hari</button></td></tr>`;
+  }).join('');
   const rows = entries.length ? entries.map(entry => { const user = authUsers.find(item => item.id === entry.userId); const label = entry.status === 'present' ? 'Hadir' : entry.status === 'off' ? 'Libur' : 'Tidak hadir'; return `<tr><td>${entry.date}</td><td><strong>${escapeHTML(user?.name || 'Akun dihapus')}</strong></td><td><span class="payroll-status ${entry.status === 'present' ? 'paid' : 'unpaid'}">${label}</span></td><td>${escapeHTML(entry.note || '—')}</td><td><button type="button" class="purchase-edit" data-attendance-delete="${entry.id}">Hapus</button></td></tr>`; }).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada koreksi manual</strong><span>Kehadiran kasir tetap otomatis berasal dari shift dan transaksi.</span></div></td></tr>';
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Kehadiran karyawan</h2><p>${data.from} s.d. ${data.to} · koreksi manual mengalahkan data otomatis</p></div><button class="modal-close">×</button></div><form id="attendance-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${data.from}" max="${data.to}" value="${data.to}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div><div class="notice">Gunakan Hadir untuk barista atau karyawan tanpa transaksi. Libur/Tidak hadir dapat membatalkan kehadiran otomatis pada tanggal yang sama.</div><div class="table-wrap modal-record-table"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Catatan</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Kembali</button><button type="submit" class="button-primary">Simpan kehadiran</button></div></form>`);
-  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: form.get('status'), note: form.get('note').trim(), updatedAt: Date.now(), updatedBy: currentUser.id }; if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); toast('Kehadiran berhasil disimpan', '◷'); });
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Hari kerja karyawan</h2><p>${data.from} s.d. ${data.to} · satu hari kerja ${workStart}–${workEnd} WIB</p></div><button class="modal-close">×</button></div><form id="attendance-form"><div class="modal-body">
+    <div class="notice">Tambahkan hari kerja untuk karyawan yang tidak tercatat otomatis oleh shift atau transaksi. Satu hari kerja dihitung penuh untuk jam ${workStart}–${workEnd} WIB. Koreksi manual mengalahkan data otomatis pada tanggal yang sama.</div>
+    <h3 class="shift-history-title">Tambah hari kerja per karyawan</h3>
+    <div class="table-wrap modal-record-table"><table><thead><tr><th>Karyawan</th><th>Hari kerja</th><th>Cup</th><th>Tanggal</th><th></th></tr></thead><tbody>${summaryRows}</tbody></table></div>
+    <h3 class="shift-history-title">Koreksi kehadiran</h3>
+    <div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${data.from}" max="${data.to}" value="${data.to}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div>
+    <div class="table-wrap modal-record-table"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Catatan</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+  </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Kembali</button><button type="submit" class="button-primary">Simpan kehadiran</button></div></form>`, true);
+  $$('[data-add-workday]', $('#modal')).forEach(button => button.addEventListener('click', () => {
+    const userId = button.dataset.addWorkday;
+    const input = $(`[data-workday-date="${userId}"]`, $('#modal'));
+    const date = input?.value || data.to;
+    if (!date || date < data.from || date > data.to) return toast('Pilih tanggal di dalam periode laporan', '!');
+    const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date);
+    const row = payrollRows.find(item => item.id === userId);
+    if (!existing && row?.days?.has(date)) return toast('Tanggal ini sudah tercatat sebagai hari kerja', '!');
+    const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: 'present', note: existing?.note || 'Ditambahkan sysadmin', updatedAt: Date.now(), updatedBy: currentUser.id };
+    if (existing) Object.assign(existing, entry); else state.attendance.push(entry);
+    save(); closeModal(); renderReports(); showAttendanceManager(); toast('Hari kerja ditambahkan', '◷');
+  }));
+  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: form.get('status'), note: form.get('note').trim(), updatedAt: Date.now(), updatedBy: currentUser.id }; if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
   $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', () => { state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); showAttendanceManager(); }));
 }
 
@@ -1211,7 +1307,8 @@ function showPayrollPayment() {
     amount.min = isAll ? '0' : '1';
     amount.value = isAll ? bulkInputs.reduce((sum, input) => sum + (Number(input.value) || 0), 0) : employees.find(row => row.id === $('#payroll-payment-user').value)?.remaining || 0;
     $('#payroll-payment-amount-label').textContent = isAll ? 'Total pembayaran semua karyawan (Rp)' : 'Nominal dibayar (Rp)';
-    $('#payroll-payment-notice').textContent = isAll ? 'Semua karyawan ditampilkan, termasuk yang belum memiliki absensi atau transaksi. Isi nominal setiap orang; Rp0 dilewati. Total di atas menjumlahkan seluruh nominal yang diisi.' : 'Isi nominal rupiah berapa pun untuk karyawan ini. Pembayaran di luar hak yang tercatat tetap tersimpan dan ditampilkan sebagai kelebihan pembayaran.';
+    const manualNotice = state.payrollSettings.mode === 'manual' ? ' Metode manual aktif; nominal hak mengikuti pengaturan manual bulanan.' : '';
+    $('#payroll-payment-notice').textContent = isAll ? `Semua karyawan ditampilkan, termasuk yang belum memiliki absensi atau transaksi. Isi nominal setiap orang; Rp0 dilewati. Total di atas menjumlahkan seluruh nominal yang diisi.${manualNotice}` : `Isi nominal rupiah berapa pun untuk karyawan ini. Pembayaran di luar hak yang tercatat tetap tersimpan dan ditampilkan sebagai kelebihan pembayaran.${manualNotice}`;
   };
   $('#payroll-payment-user').addEventListener('change', updateTarget);
   bulkInputs.forEach(input => input.addEventListener('input', () => { $('#payroll-payment-amount').value = bulkInputs.reduce((sum, field) => sum + (Number(field.value) || 0), 0); }));
@@ -1266,15 +1363,105 @@ function shiftHistoryHTML() {
   if (!recent.length) return '<div class="empty-inline"><strong>Belum ada riwayat shift</strong><span>Shift pertama akan tercatat setelah dibuka.</span></div>';
   return `<div class="shift-history-list">${recent.map(shift => { const summary = shiftSummary(shift); return `<div><span><strong>${transactionDateTime(shift.startedAt)}</strong><small>${escapeHTML(shift.startedBy || '—')} · ${shift.endedAt ? shiftDuration(shift) : 'Sedang aktif'}</small></span><span><strong>${summary.orders.length} trx · ${rupiah(summary.revenue)}</strong><small>${shift.endedAt ? `Selisih ${rupiah(shift.cashDifference || 0)}` : 'Belum ditutup'}</small></span></div>`; }).join('')}</div>`;
 }
+function defaultShiftLocation() { return { enabled: false, label: '', latitude: null, longitude: null, radius: 50 }; }
+function shiftLocationSettings() { return { ...defaultShiftLocation(), ...(state.shiftLocation || {}) }; }
+function readCurrentPosition() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(new Error('Perangkat tidak mendukung pembacaan lokasi'));
+    navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+  });
+}
+function distanceMeters(fromLat, fromLon, toLat, toLon) {
+  const rad = value => Number(value) * Math.PI / 180;
+  const earth = 6371000; const dLat = rad(Number(toLat) - Number(fromLat)); const dLon = rad(Number(toLon) - Number(fromLon));
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(fromLat)) * Math.cos(rad(toLat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * earth * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+function locationErrorMessage(error) {
+  if (error?.code === 1) return 'Izin lokasi ditolak. Aktifkan akses lokasi untuk membuka shift';
+  if (error?.code === 3) return 'Waktu pembacaan lokasi habis. Coba lagi di area terbuka';
+  return 'Lokasi saat ini tidak dapat dibaca. Pastikan GPS aktif lalu coba lagi';
+}
+async function verifyShiftLocation() {
+  const settings = shiftLocationSettings();
+  if (!settings.enabled) return { ok: true, settings };
+  const latitude = Number(settings.latitude); const longitude = Number(settings.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) throw new Error('Lokasi shift belum diatur oleh sysadmin');
+  let position;
+  try { position = await readCurrentPosition(); } catch (error) { throw new Error(locationErrorMessage(error)); }
+  const distance = distanceMeters(latitude, longitude, position.coords.latitude, position.coords.longitude);
+  return { ok: distance <= Number(settings.radius || 0), distance, accuracy: position.coords.accuracy, latitude: position.coords.latitude, longitude: position.coords.longitude, settings };
+}
+function showShiftLocationSettings() {
+  if (!isSysadmin()) return toast('Hanya sysadmin yang dapat mengatur lokasi shift', '!');
+  const settings = shiftLocationSettings();
+  const hasPoint = Number.isFinite(Number(settings.latitude)) && Number.isFinite(Number(settings.longitude));
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Atur lokasi shift</h2><p>Shift hanya bisa dibuka ketika perangkat berada di titik ini</p></div><button class="modal-close">×</button></div><form id="shift-location-form"><div class="modal-body">
+    <div class="form-grid">
+      <div class="field full"><label>Nama lokasi</label><input name="label" maxlength="80" value="${escapeHTML(settings.label || '')}" placeholder="Contoh: Sorgtime Coffee Bar" required></div>
+      <div class="field"><label>Latitude</label><input name="latitude" type="number" step="any" min="-90" max="90" value="${hasPoint ? Number(settings.latitude) : ''}" required></div>
+      <div class="field"><label>Longitude</label><input name="longitude" type="number" step="any" min="-180" max="180" value="${hasPoint ? Number(settings.longitude) : ''}" required></div>
+      <div class="field"><label>Radius toleransi (meter)</label><input name="radius" type="number" min="5" max="10000" step="5" value="${Number(settings.radius || 50)}" required></div>
+      <div class="field"><label>Status</label><label class="checkbox-line"><input name="enabled" type="checkbox" ${settings.enabled ? 'checked' : ''}> Wajibkan saat membuka shift</label></div>
+    </div>
+    <div class="toolbar-group" style="margin:12px 0"><button type="button" class="secondary-button" id="shift-location-detect">◎ Gunakan lokasi saat ini</button></div>
+    <div class="notice" id="shift-location-status">${settings.enabled ? `Aktif · ${escapeHTML(settings.label || 'Titik lokasi')} · radius ${Number(settings.radius || 0)} m` : 'Belum diwajibkan. Isi titik lalu centang wajib untuk mengaktifkan.'}</div>
+    <div class="notice">Browser hanya mengizinkan pembacaan lokasi pada koneksi aman (HTTPS atau localhost). Minta karyawan mengizinkan akses lokasi saat diminta.</div>
+  </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan lokasi</button></div></form>`, true);
+  const form = $('#shift-location-form');
+  $('#shift-location-detect').addEventListener('click', async () => {
+    const status = $('#shift-location-status'); status.textContent = 'Membaca lokasi perangkat...';
+    try {
+      const position = await readCurrentPosition();
+      form.querySelector('[name="latitude"]').value = position.coords.latitude.toFixed(6);
+      form.querySelector('[name="longitude"]').value = position.coords.longitude.toFixed(6);
+      status.textContent = `Lokasi terbaca · akurasi ±${Math.round(position.coords.accuracy)} meter`;
+    } catch (error) { status.textContent = locationErrorMessage(error); }
+  });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const enabled = data.has('enabled');
+    const label = String(data.get('label') || '').trim();
+    const latitude = Number(data.get('latitude'));
+    const longitude = Number(data.get('longitude'));
+    const radius = Math.max(5, Math.min(10000, Number(data.get('radius')) || 50));
+    if (enabled && (!label || !Number.isFinite(latitude) || !Number.isFinite(longitude))) return toast('Isi nama, latitude, dan longitude lokasi', '!');
+    state.shiftLocation = { enabled, label, latitude: Number.isFinite(latitude) ? latitude : null, longitude: Number.isFinite(longitude) ? longitude : null, radius, updatedAt: Date.now(), updatedBy: currentUser.id };
+    save(); closeModal(); renderReports(); toast(enabled ? 'Lokasi shift berhasil diwajibkan' : 'Kewajiban lokasi shift dimatikan', '◎');
+  });
+}
 function showShiftManager() {
   if (!canAccess('pos')) return toast('Anda tidak memiliki akses untuk mengelola shift', '!');
   const shift = activeShift();
   if (!shift) {
-    openModal(`<div class="modal-header"><div><h2 id="modal-title">Mulai shift baru</h2><p>Nomor antrean akan dimulai kembali dari A-001</p></div><button class="modal-close">×</button></div><form id="start-shift-form"><div class="modal-body"><div class="payment-total-box"><span>KAS AWAL</span><strong id="opening-cash-preview">${rupiah(0)}</strong></div><div class="field"><label>Nominal kas awal</label><input name="openingCash" id="opening-cash" type="number" min="0" step="1000" value="0" required autofocus></div><div class="notice">Transaksi hanya dapat dibuat saat shift aktif. Membuka shift akan mengosongkan keranjang lama dan mereset nomor pesanan ke A-001.</div><h3 class="shift-history-title">Riwayat shift terakhir</h3>${shiftHistoryHTML()}</div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Mulai shift</button></div></form>`, true);
+    const location = shiftLocationSettings();
+    const locationNotice = location.enabled
+      ? `<div class="notice" id="shift-location-notice"><strong>Lokasi wajib:</strong> ${escapeHTML(location.label || 'Titik lokasi outlet')} (radius ${Number(location.radius || 0)} m). <button type="button" class="purchase-edit" id="shift-location-check">Periksa lokasi</button> <span id="shift-location-result"></span></div>`
+      : `<div class="notice">Shift belum diwajibkan pada titik lokasi tertentu.${isSysadmin() ? ' Atur melalui tombol <strong>Lokasi shift</strong> di halaman Laporan.' : ''}</div>`;
+    openModal(`<div class="modal-header"><div><h2 id="modal-title">Mulai shift baru</h2><p>Nomor antrean akan dimulai kembali dari A-001</p></div><button class="modal-close">×</button></div><form id="start-shift-form"><div class="modal-body"><div class="payment-total-box"><span>KAS AWAL</span><strong id="opening-cash-preview">${rupiah(0)}</strong></div><div class="field"><label>Nominal kas awal</label><input name="openingCash" id="opening-cash" type="number" min="0" step="1000" value="0" required autofocus></div><div class="notice">Transaksi hanya dapat dibuat saat shift aktif. Membuka shift akan mengosongkan keranjang lama dan mereset nomor pesanan ke A-001.</div>${locationNotice}<h3 class="shift-history-title">Riwayat shift terakhir</h3>${shiftHistoryHTML()}</div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Mulai shift</button></div></form>`, true);
     $('#opening-cash').addEventListener('input', event => { $('#opening-cash-preview').textContent = rupiah(Math.max(0, Number(event.target.value) || 0)); });
-    $('#start-shift-form').addEventListener('submit', event => {
-      event.preventDefault(); const openingCash = Math.max(0, Number(new FormData(event.currentTarget).get('openingCash')) || 0); const startedAt = Date.now();
+    $('#shift-location-check')?.addEventListener('click', async () => {
+      const result = $('#shift-location-result'); if (!result) return;
+      result.textContent = 'Memeriksa lokasi...';
+      try {
+        const check = await verifyShiftLocation();
+        result.innerHTML = check.ok ? `<strong class="positive-value">Dalam radius (${Math.round(check.distance)} m)</strong>` : `<strong class="negative-value">Di luar radius (${Math.round(check.distance)} m)</strong>`;
+      } catch (error) { result.textContent = error.message; }
+    });
+    $('#start-shift-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget; const submit = form.querySelector('button[type="submit"]');
+      const openingCash = Math.max(0, Number(new FormData(form).get('openingCash')) || 0); const startedAt = Date.now();
       const entry = { id: crypto.randomUUID(), startedAt, startedById: currentUser.id, startedBy: currentUser.name, openingCash, endedAt: null };
+      if (shiftLocationSettings().enabled) {
+        const originalLabel = submit.textContent; submit.disabled = true; submit.textContent = 'Memeriksa lokasi...';
+        try {
+          const check = await verifyShiftLocation();
+          if (!check.ok) { submit.disabled = false; submit.textContent = originalLabel; return toast(`Di luar radius lokasi (${Math.round(check.distance)} m dari titik). Dekati lokasi outlet lalu coba lagi`, '!'); }
+          entry.openedLocation = { label: check.settings.label, distance: Math.round(check.distance), accuracy: Math.round(check.accuracy || 0), latitude: check.latitude, longitude: check.longitude };
+        } catch (error) { submit.disabled = false; submit.textContent = originalLabel; return toast(error.message, '!'); }
+      }
       state.shifts.push(entry); state.activeShiftId = entry.id; state.orderNo = 1; state.cart = []; state.selectedCustomer = null; state.promo = null;
       save(); closeModal(); renderAll(); toast('Shift dibuka · pesanan dimulai dari A-001', '◷');
     });
@@ -1294,17 +1481,17 @@ function showShiftManager() {
   });
 }
 
-function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderCustomers(); renderTransactions(); renderReports(); renderPayslip(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
+function renderAll() { renderCategories(); renderProducts(); renderCart(); renderKDS(); renderInventory(); renderReports(); renderPayslip(); renderAccounts(); renderShiftState(); updateNetworkUI(); }
 
 const todayLabel = new Intl.DateTimeFormat('id-ID',{weekday:'long',day:'numeric',month:'long',timeZone:'Asia/Jakarta'}).format(new Date());
-const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], customers:['Pelanggan','LOYALTY'], transactions:['Riwayat','TRANSAKSI & NOTA'], reports:['Laporan','PERFORMA OUTLET'], payslip:['Slip Gaji','GAJI KARYAWAN'], accounts:['Akun','PENGGUNA & PERAN'] };
+const pageMeta = { pos:['Kasir',todayLabel], kds:['Barista','ANTREAN PRODUKSI'], inventory:['Inventori','BAHAN & RESEP'], reports:['Laporan','PERFORMA OUTLET'], payslip:['Slip Gaji','GAJI KARYAWAN'], accounts:['Akun','PENGGUNA & PERAN'] };
 function switchView(view) {
   if (!canAccess(view)) return toast('Anda tidak memiliki akses ke halaman tersebut','!');
   $$('.view').forEach(v=>v.classList.toggle('active', v.id===`view-${view}`));
   $$('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.view===view));
   $('#page-title').textContent = pageMeta[view][0]; $('#page-eyebrow').textContent = pageMeta[view][1];
   $('.sidebar').classList.remove('open');
-  if (view==='kds') renderKDS(); if (view==='transactions') renderTransactions(); if (view==='reports') renderReports(); if (view==='payslip') renderPayslip(); if (view==='accounts') renderAccounts();
+  if (view==='kds') renderKDS(); if (view==='reports') renderReports(); if (view==='payslip') renderPayslip(); if (view==='accounts') renderAccounts();
 }
 
 function updateNetworkUI() {
@@ -1444,10 +1631,8 @@ function exportCSV() {
     ['Sorgtime POS','Laporan Usaha'],['Periode',`${data.from} s.d. ${data.to}`],['Karyawan',data.cashier || 'Semua karyawan'],['Pembayaran',data.payment || 'Semua metode'],[],
     ['RINGKASAN LABA','NILAI'],['Omzet',data.revenue],['Transaksi',data.orders.length],['Cup terjual',data.cups],['HPP termasuk bonus',data.hpp],['Bonus di dalam HPP',Math.round(data.hppBonusIncluded)],['Penyesuaian bonus terhadap HPP',Math.round(data.bonusHppAdjustment)],['Laba kotor',data.grossProfit],['Gaji pokok',Math.round(data.basePayTotal)],['Laba operasional',Math.round(data.operating)],[],
     ['RINGKASAN ARUS KAS AKTUAL','NILAI'],['Penerimaan penjualan semua metode',data.cashRevenue],['Belanja stok dibayar',data.purchaseTotal],['Gaji dan bonus sudah dibayar',data.payrollPaidTotal],['Perubahan kas bersih',Math.round(data.cashNet)],['Estimasi kas setelah seluruh hak gaji dibayar',Math.round(data.projectedCash)],[],
-    ['PERBANDINGAN HARIAN'],['Tanggal','Transaksi','Cup','Omzet terfilter','HPP termasuk bonus','Gaji pokok','Bonus hak','Belanja stok','Gaji dibayar','Laba operasional','Arus kas aktual'],...data.days.map(row=>[row.day,row.transactions,row.cups,row.revenue,row.hpp,Math.round(row.basePay),row.bonus,row.purchases,row.payrollPaid,Math.round(row.operating),Math.round(row.cashNet)]),[],
-    ['GAJI DAN BONUS'],['Karyawan','Hari kerja','Cup','Gaji pokok','Bonus cup','Total hak','Sudah dibayar','Sisa','Status'],...data.payroll.map(row=>[row.name,row.workDays,row.cups,Math.round(row.basePay),row.bonus,Math.round(row.total),row.paid,Math.round(row.remaining),row.paymentStatus]),[],
-    ['PEMBAYARAN GAJI'],['Tanggal bayar','Karyawan','Periode mulai','Periode selesai','Metode','Nominal','Catatan'],...data.actualPayments.map(entry=>[entry.paidDate,authUsers.find(user=>user.id===entry.userId)?.name||'Akun dihapus',entry.periodFrom,entry.periodTo,entry.method,entry.amount,entry.note||'']),[],
-    ['BEBAN BELANJA'],['Tanggal','Item','Jumlah','Satuan','Referensi','Nominal'],...data.purchases.map(movement=>{const item=state.inventory.find(entry=>String(entry.id)===String(movement.ingredientId));return[jakartaDateKey(movement.createdAt),item?.name||'Item dihapus',movement.amount,item?.unit||'',movement.reference||'',movement.purchaseCost??'Belum dicatat'];})
+    ['GAJI DAN BONUS'],['Karyawan','Hari kerja','Cup','Gaji pokok','Bonus cup','Total hak','Sudah dibayar','Sisa','Status','Sumber'],...data.payroll.map(row=>[row.name,row.workDays,row.cups,Math.round(row.basePay),row.bonus,Math.round(row.total),row.paid,Math.round(row.remaining),row.paymentStatus,row.manual?'Manual':'Otomatis']),[],
+    ['PEMBAYARAN GAJI'],['Tanggal bayar','Karyawan','Periode mulai','Periode selesai','Metode','Nominal','Catatan'],...data.actualPayments.map(entry=>[entry.paidDate,authUsers.find(user=>user.id===entry.userId)?.name||'Akun dihapus',entry.periodFrom,entry.periodTo,entry.method,entry.amount,entry.note||''])
   ];
   const csv = rows.map(row=>row.map(value=>{let safe=String(value??'');if(/^[=+\-@]/.test(safe))safe=`'${safe}`;return `"${safe.replaceAll('"','""')}"`;}).join(',')).join('\n');
   const link=document.createElement('a'); link.href=URL.createObjectURL(new Blob(['\ufeff',csv],{type:'text/csv;charset=utf-8'})); link.download=`laporan-sorgtime-${data.from}-${data.to}.csv`; link.click(); URL.revokeObjectURL(link.href); toast('Laporan lengkap berhasil diekspor', '⇩');
@@ -1502,7 +1687,6 @@ document.addEventListener('click', async e => {
 
 $('#product-search').addEventListener('input', renderProducts);
 $('#customer-trigger').addEventListener('click', () => isShiftActive() ? showCustomerPicker() : showShiftManager());
-$('#customer-add').addEventListener('click', showCustomerForm);
 $('#pay-button').addEventListener('click', showPayment);
 $('#promo-button').addEventListener('click', showPromotionManager);
 $('#manage-prices').addEventListener('click', showPriceManager);
@@ -1510,10 +1694,6 @@ $('#mobile-menu').addEventListener('click', ()=>$('.sidebar').classList.toggle('
 $('#toggle-network').addEventListener('click', ()=>{ state.networkOnline=!state.networkOnline; save(); updateNetworkUI(); renderReports(); toast(state.networkOnline?'Koneksi pulih, data sedang disinkronkan':'Mode offline aktif — transaksi tetap dapat berjalan', state.networkOnline?'✓':'!'); });
 $('#sync-card').addEventListener('dblclick', ()=>$('#toggle-network').click());
 $('#inventory-search').addEventListener('input', e=>renderInventory(e.target.value));
-$('#customer-search-page').addEventListener('input', e=>renderCustomers(e.target.value));
-['transaction-search','transaction-date-from','transaction-date-to','transaction-cashier','transaction-payment','transaction-status'].forEach(id => $(`#${id}`).addEventListener(id === 'transaction-search' ? 'input' : 'change', renderTransactions));
-$('#reset-transaction-filter').addEventListener('click', () => { ['transaction-search','transaction-date-from','transaction-date-to','transaction-cashier','transaction-payment','transaction-status'].forEach(id => { $(`#${id}`).value = ''; }); renderTransactions(); });
-$('#export-transactions').addEventListener('click', exportTransactions);
 $('#account-search').addEventListener('input', e=>renderAccounts(e.target.value));
 $('#account-add').addEventListener('click', showAccountForm);
 $('#hpp-manage').addEventListener('click', showHppManager);
@@ -1523,6 +1703,7 @@ $('#export-report').addEventListener('click', exportCSV);
 $('#attendance-manage').addEventListener('click', showAttendanceManager);
 $('#payroll-payment').addEventListener('click', showPayrollPayment);
 $('#payroll-settings').addEventListener('click', showPayrollSettings);
+$('#shift-location-settings').addEventListener('click', showShiftLocationSettings);
 $('#report-add-expense').addEventListener('click', () => showStockForm());
 $('#payslip-month').addEventListener('change', renderPayslip);
 $('#payslip-print').addEventListener('click', printPayslip);
@@ -1584,7 +1765,9 @@ function hydrateRemoteState(result) {
   state.shifts ||= [];
   state.attendance ||= [];
   state.payrollPayments ||= [];
-  state.payrollSettings ||= { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000 };
+  state.payrollManual ||= [];
+  state.shiftLocation = { enabled: false, label: '', latitude: null, longitude: null, radius: 50, ...(state.shiftLocation || {}) };
+  state.payrollSettings = { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000, mode: 'auto', workStart: '09:00', workEnd: '16:00', ...(state.payrollSettings || {}) };
   writeLocalState();
   clearLocalDirty();
 }
