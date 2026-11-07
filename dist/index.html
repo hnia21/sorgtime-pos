@@ -40,6 +40,7 @@
         <button class="nav-item" data-view="inventory"><span class="nav-icon">◇</span><span>Inventori</span></button>
         <button class="nav-item" data-view="customers"><span class="nav-icon">♙</span><span>Pelanggan</span></button>
         <button class="nav-item" data-view="transactions"><span class="nav-icon">▤</span><span>Riwayat</span></button>
+        <button class="nav-item" data-view="attendance" id="nav-attendance"><span class="nav-icon">◷</span><span id="attendance-nav-label">Absensi</span></button>
         <button class="nav-item" data-view="reports"><span class="nav-icon">↗</span><span>Laporan</span></button>
         <button class="nav-item" data-view="payslip"><span class="nav-icon">▦</span><span>Slip Gaji</span></button>
         <button class="nav-item" data-view="accounts" id="nav-accounts"><span class="nav-icon">⚙</span><span>Akun</span></button>
@@ -141,7 +142,7 @@
         <div class="metric-grid" id="customer-metrics"></div>
         <div class="content-card">
           <div class="card-header"><div><h3>Member terbaru</h3><p>Riwayat poin dan kunjungan pelanggan</p></div><label class="small-search">⌕ <input id="customer-search-page" placeholder="Cari nama atau nomor..."></label></div>
-          <div class="table-wrap"><table><thead><tr><th>Pelanggan</th><th>Kontak</th><th>Kunjungan</th><th>Total belanja</th><th>Poin</th><th>Status</th></tr></thead><tbody id="customer-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>Pelanggan</th><th>Kontak</th><th>Kunjungan</th><th>Total belanja</th><th>Poin</th><th>Status</th><th></th></tr></thead><tbody id="customer-table"></tbody></table></div>
         </div>
       </section>
 
@@ -164,6 +165,18 @@
           <div class="card-header"><div><h3>Daftar transaksi</h3><p id="transaction-result-label">0 transaksi ditemukan</p></div><strong class="history-total" id="transaction-filter-total">Rp0</strong></div>
           <div class="table-wrap"><table><thead><tr><th>Waktu</th><th>Order</th><th>Kasir</th><th>Pelanggan</th><th>Jumlah</th><th>Pembayaran</th><th>Total</th><th>Status</th><th></th></tr></thead><tbody id="transaction-table"></tbody></table></div>
         </div>
+      </section>
+
+      <section class="view" id="view-attendance">
+        <div class="section-toolbar">
+          <div><span class="hand-label">KEHADIRAN KARYAWAN</span><h2 id="attendance-title">Absensi karyawan</h2><p id="attendance-subtitle">Catat kehadiran di titik lokasi outlet</p></div>
+          <div class="toolbar-group">
+            <button class="secondary-button" id="attendance-location-settings">◎ Lokasi absensi</button>
+            <button class="secondary-button" id="attendance-manage-view">◷ Kelola absensi</button>
+          </div>
+        </div>
+        <div class="metric-grid" id="attendance-metrics"></div>
+        <div id="attendance-content"></div>
       </section>
 
       <section class="view" id="view-reports">
