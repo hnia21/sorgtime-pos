@@ -434,7 +434,39 @@ const isSysadmin = () => currentUser?.role === 'sysadmin';
 const productPrice = product => Number(product.price);
 const addOnPrice = addOn => Number(addOn.price);
 const selectedPromotion = () => state.promotions.find(item => item.id === state.promo && item.active);
-const recipeHpp = recipe => recipe ? recipe.components.reduce((sum, component) => sum + (Number(component.costPrice) / Math.max(Number(component.packageSize), .0001) * Number(component.qty)), 0) : 0;
+function itemById(id) { return state.inventory.find(item => String(item.id) === String(id)); }
+function isPremixItem(item) { return item?.kind === 'premix'; }
+function isPremixableItem(item) {
+  const category = String(item?.category || '').toLowerCase();
+  return !['kemasan', 'sirup', 'packaging', 'syrup'].includes(category);
+}
+function inventoryUnitCost(item) {
+  if (!item) return 0;
+  if (isPremixItem(item)) return premixUnitCost(item);
+  const price = Number(item.costPrice) || 0;
+  const size = Number(item.packageSize) || 0;
+  return size > 0 ? price / size : 0;
+}
+function premixUnitCost(premix) {
+  const yieldQty = Number(premix?.yieldQty) || 0;
+  if (yieldQty <= 0) return 0;
+  const total = (premix.components || []).reduce((sum, component) => {
+    const pure = itemById(component.ingredientId);
+    if (!pure || isPremixItem(pure)) return sum;
+    return sum + convertQuantity(component.qty, component.unit, pure.unit) * inventoryUnitCost(pure);
+  }, 0);
+  return total / yieldQty;
+}
+function recipeComponentCost(component) {
+  const item = itemById(component.ingredientId);
+  if (item) {
+    const qtyInStockUnit = convertQuantity(component.qty, component.unit, item.unit);
+    const unitCost = inventoryUnitCost(item);
+    if (unitCost > 0) return qtyInStockUnit * unitCost;
+  }
+  return Number(component.costPrice) / Math.max(Number(component.packageSize), .0001) * Number(component.qty);
+}
+const recipeHpp = recipe => recipe ? recipe.components.reduce((sum, component) => sum + recipeComponentCost(component), 0) : 0;
 const recipeWorkerCost = recipe => recipe ? recipe.components.filter(component => component.costType === 'labor-per-cup' || /^(pekerja|bonus|tenaga kerja)$/i.test(String(component.name).trim())).reduce((sum, component) => sum + (Number(component.costPrice) / Math.max(Number(component.packageSize), .0001) * Number(component.qty)), 0) : 0;
 const recipeForProduct = productId => state.recipes.find(recipe => String(recipe.productId) === String(productId));
 let migratedWorkerCostSnapshots = false;
@@ -470,6 +502,12 @@ function convertQuantity(value, fromUnit, toUnit) {
   if (from === 'kg' && to === 'gram') return amount * 1000;
   return amount;
 }
+// Model inventori dua lapis: bahan murni sebagai sumber, lalu premix yang
+// diracik dari bahan murni dan dipakai oleh resep/HPP.
+if (state.hppVersion < 3) {
+  const migrated = migratePremixModel();
+  if (migrated) save();
+}
 function formatQuantity(value, unit) {
   let amount = Number(value); if (!Number.isFinite(amount)) amount = 0;
   const normalized = normalizeUnit(unit); let label = canonicalUnit(unit) || String(unit || '').trim();
@@ -487,6 +525,75 @@ function quantityInputUnits(unit) {
   if (normalized === 'gram' || normalized === 'kg') return [{ value: 'gram', label: 'gram' }, { value: 'kg', label: 'kg' }];
   const label = canonicalUnit(unit) || 'unit';
   return [{ value: label, label }];
+}
+
+function uniquePremixSku(name) {
+  const base = `PMX-${String(name || 'PREMIX').toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 14) || 'PREMIX'}`;
+  let sku = base; let counter = 2;
+  while (state.inventory.some(item => String(item.sku || '').toUpperCase() === sku)) sku = `${base}-${counter++}`;
+  return sku;
+}
+
+function seedPureItemCostsFromRecipes() {
+  const components = state.recipes.flatMap(recipe => recipe.components || []);
+  state.inventory.filter(item => !isPremixItem(item)).forEach(item => {
+    if (Number(item.costPrice) > 0 && Number(item.packageSize) > 0) return;
+    const source = components.find(component => String(component.ingredientId) === String(item.id) && Number(component.costPrice) > 0 && Number(component.packageSize) > 0);
+    if (source) {
+      const size = convertQuantity(Number(source.packageSize), source.unit, item.unit);
+      if (size > 0) { item.costPrice = Number(source.costPrice); item.packageSize = Number(size.toFixed(6)); return; }
+    }
+    const purchase = [...state.inventoryMovements]
+      .filter(movement => String(movement.ingredientId) === String(item.id) && movement.mode === 'add' && Number(movement.purchaseCost) > 0 && Number(movement.amount) > 0)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (purchase) { item.costPrice = Number(purchase.purchaseCost); item.packageSize = Number(purchase.amount); }
+  });
+}
+
+function createMigratedPremix(recipe, mix, scale) {
+  const name = `Premix ${recipe.name}`.slice(0, 60);
+  let premix = state.inventory.find(item => isPremixItem(item) && item.name.toLowerCase() === name.toLowerCase());
+  if (!premix) {
+    premix = { id: crypto.randomUUID(), name, sku: uniquePremixSku(recipe.name), category: 'Premix', icon: '◈', unit: 'L', stock: 0, min: 1, max: 10, kind: 'premix', yieldQty: 1, components: [] };
+    state.inventory.push(premix);
+  }
+  premix.kind = 'premix';
+  premix.unit = 'L';
+  premix.yieldQty = 1;
+  premix.components = mix.map(({ component, item }) => ({ id: crypto.randomUUID(), ingredientId: item.id, qty: Number((Number(component.qty) * scale).toFixed(4)), unit: component.unit }));
+  return premix;
+}
+
+function migratePremixModel() {
+  if (!Array.isArray(state.inventory)) return false;
+  state.inventory.forEach(item => { if (!isPremixItem(item)) item.kind = 'pure'; });
+  seedPureItemCostsFromRecipes();
+  state.recipes.forEach(recipe => {
+    if (!Array.isArray(recipe.components) || !recipe.components.length) return;
+    if (recipe.components.some(component => isPremixItem(itemById(component.ingredientId)))) return;
+    const mix = []; const keep = [];
+    recipe.components.forEach(component => {
+      const item = itemById(component.ingredientId);
+      if (item && !isPremixItem(item) && isPremixableItem(item) && !component.costType) mix.push({ component, item });
+      else keep.push(component);
+    });
+    if (mix.length < 2) return;
+    const totalMl = mix.reduce((sum, entry) => {
+      const unit = normalizeUnit(entry.component.unit);
+      const qty = Number(entry.component.qty) || 0;
+      if (unit === 'ml') return sum + qty;
+      if (unit === 'l') return sum + qty * 1000;
+      return sum;
+    }, 0);
+    if (totalMl <= 0) return;
+    const premix = createMigratedPremix(recipe, mix, 1000 / totalMl);
+    if (!premix) return;
+    const qtyL = Number((totalMl / 1000).toFixed(4));
+    const cost = Number(premixUnitCost(premix).toFixed(4));
+    recipe.components = [...keep, { id: crypto.randomUUID(), ingredientId: premix.id, name: premix.name, qty: qtyL, unit: 'L', costPrice: cost, packageSize: 1, trackStock: true, costType: null }];
+  });
+  state.hppVersion = 3;
+  return true;
 }
 
 let activeCategory = 'Semua';
@@ -818,24 +925,54 @@ function updateOrder(id, current) {
 
 function stockStatus(item) { const ratio = item.min > 0 ? item.stock / item.min : Infinity; return ratio < .75 ? ['Kritis','danger'] : ratio < 1.15 ? ['Menipis','warning'] : ['Aman','']; }
 function ingredientCostLabel(item) {
+  const price = Number(item.costPrice) || 0; const size = Number(item.packageSize) || 0;
+  if (price > 0 && size > 0) return `<strong>${rupiah(price)}</strong><small>/ ${escapeHTML(formatQuantity(size, item.unit))}</small>`;
   const rows = state.recipes.flatMap(recipe => recipe.components).filter(component => String(component.ingredientId) === String(item.id));
-  if (!rows.length) return '<span class="muted-cell">Belum dipakai resep</span>';
+  if (!rows.length) return '<span class="muted-cell">Belum ada harga acuan</span>';
   const prices = [...new Set(rows.map(component => Math.round(Number(component.costPrice))))].sort((a, b) => a - b);
   const sizes = [...new Set(rows.map(component => formatQuantity(component.packageSize, component.unit)))];
   const priceLabel = prices.length === 1 ? rupiah(prices[0]) : `${rupiah(prices[0])}–${rupiah(prices.at(-1))}`;
   return `<strong>${priceLabel}</strong><small>${sizes.length === 1 ? `/ ${escapeHTML(sizes[0])}` : `${prices.length} harga pada resep`}</small>`;
 }
+function premixCostLabel(item) {
+  const unitCost = inventoryUnitCost(item);
+  if (!(unitCost > 0)) return '<span class="muted-cell">Harga bahan murni belum lengkap</span>';
+  return `<strong>${rupiah(unitCost)}</strong><small>/ ${escapeHTML(canonicalUnit(item.unit))}</small>`;
+}
+function premixCompositionLabel(item) {
+  const parts = (item.components || []).map(component => {
+    const pure = itemById(component.ingredientId);
+    return pure ? `${escapeHTML(pure.name)} ${escapeHTML(formatQuantity(component.qty, component.unit))}` : '<span class="muted-cell">Bahan dihapus</span>';
+  }).filter(Boolean);
+  if (!parts.length) return '<span class="muted-cell">Komposisi belum diisi</span>';
+  return `<div class="premix-composition">${parts.join(' · ')}</div><small>Hasil ${escapeHTML(formatQuantity(item.yieldQty || 1, item.unit))} per batch</small>`;
+}
 function renderInventory(filter = '') {
-  const critical = state.inventory.filter(i => i.stock < i.min).length;
+  const pureItems = state.inventory.filter(item => !isPremixItem(item));
+  const premixItems = state.inventory.filter(isPremixItem);
+  const critical = state.inventory.filter(item => Number(item.stock) < Number(item.min)).length;
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const todayMovements = state.inventoryMovements.filter(item => item.createdAt >= today.getTime());
-  const stockIn = todayMovements.filter(item => item.mode === 'add' || (item.mode === 'set' && item.after > item.before)).length;
+  const stockIn = todayMovements.filter(item => item.mode === 'add' || item.mode === 'production' || (item.mode === 'set' && item.after > item.before)).length;
   const stockOut = todayMovements.filter(item => item.mode === 'subtract' || (item.mode === 'set' && item.after < item.before)).length;
   $('#inventory-metrics').innerHTML = [
-    ['◇', state.inventory.length, 'Total bahan', '#efe7de', '#775640'], ['!', critical, 'Perlu restock', '#f8e5e3', '#b83d3d'], ['↙', stockIn, 'Stok masuk hari ini', '#e7f1ed', '#397461'], ['↘', stockOut, 'Stok keluar hari ini', '#fbf3dd', '#9a6b10']
+    ['◇', pureItems.length, 'Bahan baku murni', '#efe7de', '#775640'], ['◈', premixItems.length, 'Bahan baku premix', '#fbf3dd', '#9a6b10'], ['!', critical, 'Perlu restock', '#f8e5e3', '#b83d3d'], ['↘', stockOut, 'Stok keluar hari ini', '#e7f1ed', '#397461']
   ].map(([icon,value,label,tone,accent])=>`<div class="metric-card"><div class="metric-top"><span class="metric-icon" style="--tone:${tone};--accent:${accent}">${icon}</span></div><h3>${value}</h3><p>${label}</p></div>`).join('');
-  const filtered = state.inventory.filter(i => `${i.name} ${i.sku} ${i.category}`.toLowerCase().includes(filter.toLowerCase()));
-  $('#inventory-table').innerHTML = filtered.length ? filtered.map(i => { const [label,cls]=stockStatus(i); const percent=i.max > 0 ? Math.max(0, Math.min(100, i.stock/i.max*100)) : 0; return `<tr><td><div class="ingredient-cell"><span class="table-icon">${escapeHTML(i.icon)}</span><span><strong>${escapeHTML(i.name)}</strong><small>${escapeHTML(i.sku)}</small></span></div></td><td>${escapeHTML(i.category)}</td><td><strong>${formatQuantity(i.stock, i.unit)}</strong><div class="stock-bar"><i style="width:${percent}%;--bar:${cls==='danger'?'#b83d3d':cls==='warning'?'#d6992d':'#397461'}"></i></div></td><td>${ingredientCostLabel(i)}</td><td>${formatQuantity(i.min, i.unit)}</td><td><span class="status-badge ${cls}">● ${label}</span></td><td><div class="inventory-actions"><button data-stock-adjust="${i.id}">± Stok</button><button data-inventory-edit="${i.id}">✎ Edit</button></div></td></tr>`; }).join('') : `<tr><td colspan="7"><div class="empty-table"><strong>Item inventori tidak ditemukan</strong><span>Ubah pencarian atau tambahkan item baru.</span></div></td></tr>`;
+  const query = String(filter || '').toLowerCase();
+  const matches = item => `${item.name} ${item.sku} ${item.category} ${(item.components || []).map(component => itemById(component.ingredientId)?.name || '').join(' ')}`.toLowerCase().includes(query);
+  const pureFiltered = pureItems.filter(matches);
+  const premixFiltered = premixItems.filter(matches);
+  const pureRows = pureFiltered.map(item => {
+    const [label, cls] = stockStatus(item); const percent = item.max > 0 ? Math.max(0, Math.min(100, item.stock / item.max * 100)) : 0;
+    return `<tr><td><div class="ingredient-cell"><span class="table-icon">${escapeHTML(item.icon)}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.sku)}</small></span></div></td><td>${escapeHTML(item.category)}</td><td><strong>${formatQuantity(item.stock, item.unit)}</strong><div class="stock-bar"><i style="width:${percent}%;--bar:${cls==='danger'?'#b83d3d':cls==='warning'?'#d6992d':'#397461'}"></i></div></td><td>${ingredientCostLabel(item)}</td><td>${formatQuantity(item.min, item.unit)}</td><td><span class="status-badge ${cls}">● ${label}</span></td><td><div class="inventory-actions"><button data-stock-adjust="${item.id}">± Stok</button><button data-inventory-edit="${item.id}">✎ Edit</button></div></td></tr>`;
+  }).join('');
+  const premixRows = premixFiltered.map(item => {
+    const [label, cls] = stockStatus(item); const percent = item.max > 0 ? Math.max(0, Math.min(100, item.stock / item.max * 100)) : 0;
+    return `<tr><td><div class="ingredient-cell"><span class="table-icon premix-icon">${escapeHTML(item.icon || '◈')}</span><span><strong>${escapeHTML(item.name)}</strong><small>${escapeHTML(item.sku)}</small></span></div></td><td>${premixCompositionLabel(item)}</td><td><strong>${formatQuantity(item.stock, item.unit)}</strong><div class="stock-bar"><i style="width:${percent}%;--bar:${cls==='danger'?'#b83d3d':cls==='warning'?'#d6992d':'#397461'}"></i></div></td><td>${premixCostLabel(item)}</td><td>${formatQuantity(item.min, item.unit)}</td><td><span class="status-badge ${cls}">● ${label}</span></td><td><div class="inventory-actions"><button data-premix-produce="${item.id}">▣ Buat</button><button data-stock-adjust="${item.id}">± Stok</button><button data-premix-edit="${item.id}">✎ Edit</button></div></td></tr>`;
+  }).join('');
+  $('#inventory-pure-table').innerHTML = pureRows || `<tr><td colspan="7"><div class="empty-table"><strong>Bahan murni tidak ditemukan</strong><span>Ubah pencarian atau tambahkan bahan murni baru.</span></div></td></tr>`;
+  $('#inventory-premix-table').innerHTML = premixRows || `<tr><td colspan="7"><div class="empty-table"><strong>Belum ada bahan premix</strong><span>Tambahkan premix, isi komposisi bahan murni, lalu lakukan produksi.</span></div></td></tr>`;
+  const count = $('#premix-count'); if (count) count.textContent = `${premixItems.length} premix`;
 }
 
 function renderCustomers(filter = '') {
@@ -1680,7 +1817,7 @@ function updateNetworkUI() {
 
 function showStockForm(item = null) {
   if (!state.inventory.length) return toast('Tambahkan item inventori terlebih dahulu', '!');
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Penyesuaian stok</h2><p>Tambah, kurangi, atau tetapkan jumlah stok aktual</p></div><button class="modal-close">×</button></div><form id="stock-form"><div class="modal-body"><div class="form-grid"><div class="field full"><label>Item inventori</label><select name="ingredient" id="stock-ingredient">${state.inventory.map(i=>`<option value="${i.id}" ${item && String(item.id)===String(i.id)?'selected':''}>${escapeHTML(i.name)} · ${formatQuantity(i.stock, i.unit)}</option>`).join('')}</select></div><div class="field"><label>Jenis penyesuaian</label><select name="mode" id="stock-mode"><option value="add">Tambah stok / belanja</option><option value="subtract">Kurangi stok</option><option value="set">Set stok aktual</option></select></div><div class="field"><label>Jumlah</label><input id="stock-amount" type="number" name="amount" min="0" step="0.01" required placeholder="0"></div><div class="field"><label>Satuan jumlah</label><select name="unit" id="stock-unit"></select></div><div class="field full" id="purchase-cost-field"><label>Total beban belanja (Rp)</label><input id="purchase-cost" type="number" name="purchaseCost" min="0" step="1000" required placeholder="Contoh: 150000"></div><div class="field full"><label>Referensi / alasan</label><input name="ref" maxlength="80" placeholder="Nomor invoice, toko pemasok, waste, koreksi..."></div></div><div class="notice">Masukkan jumlah dalam <strong>ml/gram</strong> atau <strong>L/kg</strong>. Angka 1.000 ml/gram otomatis dibaca sebagai 1 L/kg.</div><div class="stock-preview" id="stock-preview"></div><div class="notice" id="purchase-cost-note">Nominal belanja akan masuk ke laporan keuangan pada tanggal pencatatan ini.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan pergerakan</button></div></form>`);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Penyesuaian stok</h2><p>Tambah, kurangi, atau tetapkan jumlah stok aktual</p></div><button class="modal-close">×</button></div><form id="stock-form"><div class="modal-body"><div class="form-grid"><div class="field full"><label>Item inventori</label><select name="ingredient" id="stock-ingredient">${state.inventory.map(i=>`<option value="${i.id}" ${item && String(item.id)===String(i.id)?'selected':''}>${isPremixItem(i) ? '[Premix]' : '[Murni]'} ${escapeHTML(i.name)} · ${formatQuantity(i.stock, i.unit)}</option>`).join('')}</select></div><div class="field"><label>Jenis penyesuaian</label><select name="mode" id="stock-mode"><option value="add">Tambah stok / belanja</option><option value="subtract">Kurangi stok</option><option value="set">Set stok aktual</option></select></div><div class="field"><label>Jumlah</label><input id="stock-amount" type="number" name="amount" min="0" step="0.01" required placeholder="0"></div><div class="field"><label>Satuan jumlah</label><select name="unit" id="stock-unit"></select></div><div class="field full" id="purchase-cost-field"><label>Total beban belanja (Rp)</label><input id="purchase-cost" type="number" name="purchaseCost" min="0" step="1000" required placeholder="Contoh: 150000"></div><div class="field full"><label>Referensi / alasan</label><input name="ref" maxlength="80" placeholder="Nomor invoice, toko pemasok, waste, koreksi..."></div></div><div class="notice">Masukkan jumlah dalam <strong>ml/gram</strong> atau <strong>L/kg</strong>. Angka 1.000 ml/gram otomatis dibaca sebagai 1 L/kg.</div><div class="stock-preview" id="stock-preview"></div><div class="notice" id="purchase-cost-note">Nominal belanja akan masuk ke laporan keuangan pada tanggal pencatatan ini.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Simpan pergerakan</button></div></form>`);
   const syncUnits = () => {
     const ingredient = state.inventory.find(i => String(i.id) === $('#stock-ingredient').value); if (!ingredient) return;
     const options = quantityInputUnits(ingredient.unit);
@@ -1689,11 +1826,19 @@ function showStockForm(item = null) {
   };
   const updatePreview = () => {
     const ingredient = state.inventory.find(i => String(i.id) === $('#stock-ingredient').value); if (!ingredient) return;
+    const premix = isPremixItem(ingredient);
+    const addOption = $('#stock-mode').querySelector('option[value="add"]');
+    addOption.disabled = premix;
+    addOption.textContent = premix ? 'Tambah stok (gunakan Produksi premix)' : 'Tambah stok / belanja';
+    if (premix && $('#stock-mode').value === 'add') $('#stock-mode').value = 'set';
     const inputUnit = $('#stock-unit').value || ingredient.unit;
     const inputAmount = Math.max(0, Number($('#stock-amount').value) || 0);
     const amount = convertQuantity(inputAmount, inputUnit, ingredient.unit);
     const mode = $('#stock-mode').value;
-    const purchaseField = $('#purchase-cost-field'); const purchaseInput = $('#purchase-cost'); const isPurchase = mode === 'add'; purchaseField.hidden = !isPurchase; $('#purchase-cost-note').hidden = !isPurchase; purchaseInput.required = isPurchase;
+    const purchaseField = $('#purchase-cost-field'); const purchaseInput = $('#purchase-cost'); const isPurchase = mode === 'add' && !premix; purchaseField.hidden = !isPurchase; purchaseInput.required = isPurchase;
+    const note = $('#purchase-cost-note');
+    note.hidden = !isPurchase && !premix;
+    note.textContent = premix ? 'Stok premix ditambah melalui Produksi premix agar bahan murni ikut berkurang. Di sini hanya untuk koreksi atau stock opname.' : 'Nominal belanja akan masuk ke laporan keuangan pada tanggal pencatatan ini.';
     const after = mode === 'add' ? ingredient.stock + amount : mode === 'subtract' ? Math.max(0, ingredient.stock - amount) : amount;
     const conversion = normalizeUnit(inputUnit) !== normalizeUnit(ingredient.unit) && inputAmount > 0 ? `<small>${formatQuantity(inputAmount, inputUnit)} = ${formatQuantity(amount, ingredient.unit)}</small>` : '';
     $('#stock-preview').innerHTML = `<span>Stok saat ini <strong>${formatQuantity(ingredient.stock, ingredient.unit)}</strong></span><b>→</b><span>Setelah disimpan <strong>${formatQuantity(after, ingredient.unit)}</strong>${conversion}</span>`;
@@ -1704,6 +1849,7 @@ function showStockForm(item = null) {
   $('#stock-form').addEventListener('submit', event => {
     event.preventDefault(); const data = new FormData(event.currentTarget); const ingredient = state.inventory.find(i => String(i.id) === data.get('ingredient')); if (!ingredient) return;
     const mode = data.get('mode'); const inputUnit = data.get('unit') || ingredient.unit; const amount = convertQuantity(Math.max(0, Number(data.get('amount')) || 0), inputUnit, ingredient.unit);
+    if (isPremixItem(ingredient) && mode === 'add') return toast('Gunakan Produksi premix untuk menambah stok premix', '!');
     if (mode !== 'set' && amount <= 0) return toast('Jumlah perubahan harus lebih dari 0', '!');
     if (mode === 'subtract' && amount > ingredient.stock) return toast('Jumlah pengurangan melebihi stok tersedia', '!');
     const before = ingredient.stock; ingredient.stock = Number((mode === 'add' ? before + amount : mode === 'subtract' ? before - amount : amount).toFixed(3));
@@ -1714,22 +1860,25 @@ function showStockForm(item = null) {
 
 function showInventoryItemForm(item = null) {
   if (!canManageSales()) return toast('Hanya admin yang dapat mengelola item inventori', '!');
+  if (item && isPremixItem(item)) return showPremixForm(item);
   const presetUnits = ['ml', 'gram', 'L', 'kg', 'pcs', 'cup', 'porsi', 'pack', 'botol', 'sachet'];
   const units = [...new Set([...presetUnits, item?.unit].filter(Boolean).map(canonicalUnit))];
   const selectedUnit = item ? canonicalUnit(item.unit) : '';
   const unitLabels = { ml: 'Mililiter (ml)', gram: 'Gram (gram)', L: 'Liter (L)', kg: 'Kilogram (kg)', pcs: 'Pieces (pcs)', cup: 'Cup', porsi: 'Porsi', pack: 'Pack', botol: 'Botol', sachet: 'Sachet' };
   const unitOptions = `<option value="" disabled ${selectedUnit ? '' : 'selected'}>Pilih satuan</option>${units.map(unit => `<option value="${escapeHTML(unit)}" ${unit === selectedUnit ? 'selected' : ''}>${escapeHTML(unitLabels[unit] || unit)}</option>`).join('')}`;
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">${item ? 'Edit' : 'Tambah'} item inventori</h2><p>Atur identitas, satuan, dan batas minimum persediaan</p></div><button class="modal-close">×</button></div><form id="inventory-item-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Nama item</label><input name="name" required maxlength="60" value="${escapeHTML(item?.name || '')}" placeholder="Contoh: Sirup pandan"></div><div class="field"><label>SKU / kode</label><input name="sku" required maxlength="30" value="${escapeHTML(item?.sku || '')}" placeholder="BB-SIR-06"></div><div class="field"><label>Kategori</label><input name="category" required maxlength="30" value="${escapeHTML(item?.category || '')}" placeholder="Sirup"></div><div class="field"><label>Ikon</label><input name="icon" maxlength="4" value="${escapeHTML(item?.icon || '◇')}" placeholder="◇"></div><div class="field"><label>Satuan</label><select name="unit" id="inventory-unit" required>${unitOptions}</select></div>${item ? '' : '<div class="field"><label>Stok awal</label><input name="stock" type="number" min="0" step="0.01" required value="0"></div>'}<div class="field"><label>Stok minimum</label><input name="min" type="number" min="0" step="0.01" required value="${item?.min ?? 0}"></div><div class="field"><label>Kapasitas maksimum</label><input name="max" type="number" min="0.01" step="0.01" required value="${item?.max ?? ''}" placeholder="10"></div></div><div class="notice">Gunakan <strong>ml</strong> atau <strong>gram</strong> sebagai satuan bahan cair/bubuk. Jumlah 1.000 ml/gram otomatis ditampilkan sebagai 1 L/kg.</div>${item ? `<div class="notice">Stok saat ini: <strong>${formatQuantity(item.stock, item.unit)}</strong>. Gunakan Penyesuaian stok untuk menambah, mengurangi, atau melakukan stock opname.</div>` : ''}</div><div class="modal-footer">${item ? '<button type="button" class="button-ghost danger-button" id="delete-inventory-item">Hapus item</button>' : '<button type="button" class="button-ghost modal-close">Batal</button>'}<button type="submit" class="button-primary">Simpan item</button></div></form>`, true);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">${item ? 'Edit' : 'Tambah'} bahan murni</h2><p>Atur identitas, satuan, harga acuan, dan batas minimum persediaan</p></div><button class="modal-close">×</button></div><form id="inventory-item-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Nama item</label><input name="name" required maxlength="60" value="${escapeHTML(item?.name || '')}" placeholder="Contoh: Sirup pandan"></div><div class="field"><label>SKU / kode</label><input name="sku" required maxlength="30" value="${escapeHTML(item?.sku || '')}" placeholder="BB-SIR-06"></div><div class="field"><label>Kategori</label><input name="category" required maxlength="30" value="${escapeHTML(item?.category || '')}" placeholder="Sirup"></div><div class="field"><label>Ikon</label><input name="icon" maxlength="4" value="${escapeHTML(item?.icon || '◇')}" placeholder="◇"></div><div class="field"><label>Satuan</label><select name="unit" id="inventory-unit" required>${unitOptions}</select></div>${item ? '' : '<div class="field"><label>Stok awal</label><input name="stock" type="number" min="0" step="0.01" required value="0"></div>'}<div class="field"><label>Stok minimum</label><input name="min" type="number" min="0" step="0.01" required value="${item?.min ?? 0}"></div><div class="field"><label>Kapasitas maksimum</label><input name="max" type="number" min="0.01" step="0.01" required value="${item?.max ?? ''}" placeholder="10"></div><div class="field"><label>Harga beli acuan (Rp)</label><input name="costPrice" type="number" min="0" step="0.01" value="${item?.costPrice ?? ''}" placeholder="Contoh: 50000"></div><div class="field"><label id="package-size-label">Isi per kemasan (${escapeHTML(selectedUnit || 'satuan')})</label><input name="packageSize" type="number" min="0" step="0.001" value="${item?.packageSize ?? ''}" placeholder="Contoh: 1"></div></div><div class="notice">Gunakan <strong>ml</strong> atau <strong>gram</strong> sebagai satuan bahan cair/bubuk. Jumlah 1.000 ml/gram otomatis ditampilkan sebagai 1 L/kg.</div><div class="notice">Harga beli acuan dipakai untuk menghitung HPP premix dan resep. Isi per kemasan memakai satuan item, misalnya 1 L atau 1 kg.</div>${item ? `<div class="notice">Stok saat ini: <strong>${formatQuantity(item.stock, item.unit)}</strong>. Gunakan Penyesuaian stok untuk menambah, mengurangi, atau melakukan stock opname.</div>` : ''}</div><div class="modal-footer">${item ? '<button type="button" class="button-ghost danger-button" id="delete-inventory-item">Hapus item</button>' : '<button type="button" class="button-ghost modal-close">Batal</button>'}<button type="submit" class="button-primary">Simpan item</button></div></form>`, true);
   let currentUnit = selectedUnit;
   $('#inventory-unit').addEventListener('change', event => {
     const nextUnit = event.target.value;
     if (!currentUnit || !nextUnit || nextUnit === currentUnit) { currentUnit = nextUnit; return; }
-    ['stock', 'min', 'max'].forEach(name => {
+    ['stock', 'min', 'max', 'packageSize'].forEach(name => {
       const input = $(`[name="${name}"]`, $('#inventory-item-form'));
       if (!input) return;
       input.value = Number(convertQuantity(Number(input.value) || 0, currentUnit, nextUnit).toFixed(3));
     });
     currentUnit = nextUnit;
+    const label = $('#package-size-label');
+    if (label) label.textContent = `Isi per kemasan (${nextUnit || 'satuan'})`;
   });
   $('#inventory-item-form').addEventListener('submit', event => {
     event.preventDefault(); const data = new FormData(event.currentTarget); const sku = data.get('sku').trim().toUpperCase();
@@ -1743,7 +1892,7 @@ function showInventoryItemForm(item = null) {
         ['amount', 'before', 'after'].forEach(key => { if (movement[key] != null) movement[key] = Number(convertQuantity(movement[key], item.unit, unit).toFixed(3)); });
       });
     }
-    const entry = { id: item?.id || crypto.randomUUID(), name: data.get('name').trim(), sku, category: data.get('category').trim(), icon: data.get('icon').trim() || '◇', unit, stock, min, max };
+    const entry = { id: item?.id || crypto.randomUUID(), name: data.get('name').trim(), sku, category: data.get('category').trim(), icon: data.get('icon').trim() || '◇', unit, stock, min, max, costPrice: Math.max(0, Number(data.get('costPrice')) || 0), packageSize: Math.max(0, Number(data.get('packageSize')) || 0), kind: 'pure' };
     if (item) Object.assign(item, entry); else state.inventory.push(entry);
     save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Item inventori berhasil disimpan', '◇');
   });
@@ -1751,7 +1900,136 @@ function showInventoryItemForm(item = null) {
     if (!await confirmDialog(`Hapus item ${item.name}? Riwayat transaksi tidak ikut terhapus.`, { title: 'Hapus item inventori', confirmLabel: 'Hapus' })) return;
     const index = state.inventory.findIndex(existing => String(existing.id) === String(item.id)); if (index >= 0) state.inventory.splice(index, 1);
     state.recipes.forEach(recipe => recipe.components.forEach(component => { if (String(component.ingredientId) === String(item.id)) { component.ingredientId = null; component.trackStock = false; } }));
+    state.inventory.filter(isPremixItem).forEach(premix => { premix.components = (premix.components || []).filter(component => String(component.ingredientId) !== String(item.id)); });
     save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Item inventori dihapus');
+  });
+}
+
+function premixComponentRow(component = {}) {
+  const options = state.inventory.filter(item => !isPremixItem(item)).map(item => `<option value="${item.id}" ${component.ingredientId && String(component.ingredientId) === String(item.id) ? 'selected' : ''} data-unit="${escapeHTML(item.unit)}">${escapeHTML(item.name)} · ${escapeHTML(canonicalUnit(item.unit))}</option>`).join('');
+  return `<div class="premix-component-row" data-premix-component="${component.id || crypto.randomUUID()}"><label><span>Bahan murni</span><select data-premix-ingredient><option value="">Pilih bahan</option>${options}</select></label><label><span>Jumlah</span><input data-premix-qty type="number" min="0.001" step="0.001" required value="${component.qty ?? ''}" placeholder="0"></label><label><span>Satuan</span><input data-premix-unit required maxlength="12" value="${escapeHTML(component.unit || '')}" placeholder="ml / gram"></label><button type="button" class="premix-remove" title="Hapus bahan">×</button></div>`;
+}
+
+function showPremixForm(premix = null) {
+  if (!canManageSales()) return toast('Hanya admin yang dapat mengelola bahan premix', '!');
+  const pureItems = state.inventory.filter(item => !isPremixItem(item));
+  if (!pureItems.length) return toast('Tambahkan bahan murni terlebih dahulu', '!');
+  const presetUnits = ['L', 'ml', 'kg', 'gram', 'pcs', 'cup'];
+  const selectedUnit = premix ? canonicalUnit(premix.unit) : 'L';
+  const units = [...new Set([...presetUnits, selectedUnit].filter(Boolean))];
+  const unitLabels = { ml: 'Mililiter (ml)', gram: 'Gram (gram)', L: 'Liter (L)', kg: 'Kilogram (kg)', pcs: 'Pieces (pcs)', cup: 'Cup' };
+  const unitOptions = units.map(unit => `<option value="${escapeHTML(unit)}" ${unit === selectedUnit ? 'selected' : ''}>${escapeHTML(unitLabels[unit] || unit)}</option>`).join('');
+  const rows = (premix?.components?.length ? premix.components : [{}]).map(premixComponentRow).join('');
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">${premix ? 'Edit' : 'Tambah'} bahan premix</h2><p>Premix diracik dari bahan murni dan dipakai resep/HPP</p></div><button class="modal-close">×</button></div><form id="premix-form"><div class="modal-body"><div class="form-grid"><div class="field"><label>Nama premix</label><input name="name" required maxlength="60" value="${escapeHTML(premix?.name || '')}" placeholder="Contoh: Premix Kopi Susu"></div><div class="field"><label>SKU / kode</label><input name="sku" required maxlength="30" value="${escapeHTML(premix?.sku || '')}" placeholder="PMX-KOPI"></div><div class="field"><label>Kategori</label><input name="category" required maxlength="30" value="${escapeHTML(premix?.category || 'Premix')}" placeholder="Premix"></div><div class="field"><label>Ikon</label><input name="icon" maxlength="4" value="${escapeHTML(premix?.icon || '◈')}" placeholder="◈"></div><div class="field"><label>Satuan hasil</label><select name="unit" id="premix-unit" required>${unitOptions}</select></div><div class="field"><label>Hasil per batch</label><input name="yieldQty" id="premix-yield" type="number" min="0.001" step="0.001" required value="${premix?.yieldQty ?? 1}"></div><div class="field"><label>Stok minimum</label><input name="min" type="number" min="0" step="0.01" required value="${premix?.min ?? 1}"></div><div class="field"><label>Kapasitas maksimum</label><input name="max" type="number" min="0.01" step="0.01" required value="${premix?.max ?? 10}"></div></div><div class="premix-builder"><div class="premix-builder-head"><div><h3>Komposisi per batch</h3><p>Jumlah bahan murni untuk menghasilkan satu batch premix</p></div><button type="button" id="add-premix-component">＋ Bahan</button></div><div id="premix-components">${rows}</div></div><div class="premix-cost-preview" id="premix-cost-preview"></div><div class="notice">HPP premix dihitung otomatis dari harga acuan bahan murni. Perbarui harga acuan di tabel bahan murni bila harga beli berubah.</div></div><div class="modal-footer">${premix ? '<button type="button" class="button-ghost danger-button" id="delete-premix">Hapus premix</button>' : ''}<button type="submit" class="button-primary">Simpan premix</button></div></form>`, true);
+  const collectComponents = () => $$('[data-premix-component]', $('#modal')).map(row => ({
+    id: row.dataset.premixComponent,
+    ingredientId: $('[data-premix-ingredient]', row).value || null,
+    qty: Number($('[data-premix-qty]', row).value) || 0,
+    unit: $('[data-premix-unit]', row).value.trim()
+  })).filter(component => component.ingredientId);
+  const draft = () => ({ id: premix?.id || 'draft', name: $('#premix-form [name="name"]').value, unit: $('#premix-unit').value, yieldQty: Number($('#premix-yield').value) || 0, components: collectComponents() });
+  const updatePreview = () => {
+    const item = draft(); const total = item.components.reduce((sum, component) => { const pure = itemById(component.ingredientId); return sum + (pure ? convertQuantity(component.qty, component.unit, pure.unit) * inventoryUnitCost(pure) : 0); }, 0);
+    const unitCost = premixUnitCost(item);
+    $('#premix-cost-preview').innerHTML = `<span>Biaya batch<strong>${rupiah(total)}</strong></span><span>HPP / ${escapeHTML(canonicalUnit(item.unit))}<strong>${rupiah(unitCost)}</strong></span><span>Bahan murni<strong>${item.components.length}</strong></span>`;
+  };
+  $('#premix-components').addEventListener('input', updatePreview);
+  $('#premix-components').addEventListener('change', event => {
+    if (event.target.matches('[data-premix-ingredient]')) {
+      const row = event.target.closest('[data-premix-component]'); const pure = itemById(event.target.value);
+      if (pure) { const normalized = normalizeUnit(pure.unit); $('[data-premix-unit]', row).value = normalized === 'l' ? 'ml' : normalized === 'kg' ? 'gram' : canonicalUnit(pure.unit); }
+    }
+    updatePreview();
+  });
+  $('#premix-components').addEventListener('click', event => { const remove = event.target.closest('.premix-remove'); if (remove) { remove.closest('[data-premix-component]').remove(); updatePreview(); } });
+  $('#add-premix-component').addEventListener('click', () => { $('#premix-components').insertAdjacentHTML('beforeend', premixComponentRow()); updatePreview(); });
+  let currentUnit = selectedUnit;
+  $('#premix-unit').addEventListener('change', event => {
+    const nextUnit = event.target.value;
+    if (currentUnit && nextUnit && nextUnit !== currentUnit) $('#premix-yield').value = Number(convertQuantity(Number($('#premix-yield').value) || 0, currentUnit, nextUnit).toFixed(4));
+    currentUnit = nextUnit; updatePreview();
+  });
+  $('#premix-yield').addEventListener('input', updatePreview);
+  updatePreview();
+  $('#premix-form').addEventListener('submit', event => {
+    event.preventDefault(); const data = new FormData(event.currentTarget); const sku = String(data.get('sku') || '').trim().toUpperCase();
+    if (state.inventory.some(existing => existing !== premix && String(existing.sku || '').toUpperCase() === sku)) return toast('SKU sudah digunakan item lain', '!');
+    const unit = canonicalUnit(data.get('unit')); const yieldQty = Math.max(0, Number(data.get('yieldQty')) || 0);
+    const min = Math.max(0, Number(data.get('min')) || 0); const max = Math.max(0, Number(data.get('max')) || 0);
+    if (yieldQty <= 0) return toast('Hasil per batch harus lebih dari 0', '!');
+    if (max <= min) return toast('Kapasitas maksimum harus lebih besar dari stok minimum', '!');
+    const components = collectComponents().map(component => ({ ...component, qty: Number(component.qty) || 0 }));
+    if (!components.length) return toast('Tambahkan minimal satu bahan murni', '!');
+    if (components.some(component => component.qty <= 0 || !component.unit)) return toast('Lengkapi jumlah dan satuan komposisi', '!');
+    if (components.some(component => { const pure = itemById(component.ingredientId); return !pure || isPremixItem(pure); })) return toast('Komposisi premix hanya boleh memakai bahan murni', '!');
+    const stock = premix ? Number(convertQuantity(premix.stock, premix.unit, unit).toFixed(3)) : 0;
+    const entry = { id: premix?.id || crypto.randomUUID(), name: String(data.get('name') || '').trim(), sku, category: String(data.get('category') || '').trim() || 'Premix', icon: String(data.get('icon') || '').trim() || '◈', unit, stock, min, max, kind: 'premix', yieldQty, components };
+    if (premix) Object.assign(premix, entry); else state.inventory.push(entry);
+    save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Bahan premix berhasil disimpan', '◈');
+  });
+  $('#delete-premix')?.addEventListener('click', async () => {
+    if (!await confirmDialog(`Hapus premix ${premix.name}? Resep yang memakainya perlu diperbarui.`, { title: 'Hapus bahan premix', confirmLabel: 'Hapus' })) return;
+    const index = state.inventory.findIndex(existing => String(existing.id) === String(premix.id)); if (index >= 0) state.inventory.splice(index, 1);
+    state.recipes.forEach(recipe => recipe.components.forEach(component => { if (String(component.ingredientId) === String(premix.id)) { component.ingredientId = null; component.trackStock = false; } }));
+    save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast('Bahan premix dihapus');
+  });
+}
+
+function showPremixProduction(premix = null) {
+  if (!canManageSales()) return toast('Hanya admin yang dapat memproduksi premix', '!');
+  const premixes = state.inventory.filter(isPremixItem);
+  if (!premixes.length) return toast('Belum ada bahan premix. Tambahkan premix terlebih dahulu.', '!');
+  const initial = premix && isPremixItem(premix) ? premix : premixes[0];
+  const options = premixes.map(item => `<option value="${item.id}" ${item === initial ? 'selected' : ''}>${escapeHTML(item.name)} · ${escapeHTML(formatQuantity(item.stock, item.unit))}</option>`).join('');
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Produksi premix</h2><p>Campur bahan murni menjadi stok premix siap pakai</p></div><button class="modal-close">×</button></div><form id="premix-production-form"><div class="modal-body"><div class="form-grid"><div class="field full"><label>Bahan premix</label><select name="premix" id="production-premix">${options}</select></div><div class="field"><label>Jumlah produksi</label><input name="amount" id="production-amount" type="number" min="0.001" step="0.001" required value="${Number(initial.yieldQty) || 1}"></div><div class="field"><label>Satuan hasil</label><select name="unit" id="production-unit"></select></div><div class="field full"><label>Referensi / catatan</label><input name="ref" maxlength="80" placeholder="Contoh: Batch pagi"></div></div><div class="production-preview" id="production-preview"></div><div class="notice">Produksi tidak dihitung sebagai belanja baru. Beban belanja tetap tercatat saat bahan murni dibeli.</div></div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Batal</button><button type="submit" class="button-primary">Mulai produksi</button></div></form>`, true);
+  const syncUnits = target => {
+    const unitOptions = quantityInputUnits(target.unit);
+    const preferred = unitOptions.find(option => normalizeUnit(option.value) === normalizeUnit(target.unit)) || unitOptions[0];
+    $('#production-unit').innerHTML = unitOptions.map(option => `<option value="${option.value}">${escapeHTML(option.label)}</option>`).join('');
+    $('#production-unit').value = preferred.value;
+  };
+  const calculate = () => {
+    const current = itemById($('#production-premix').value); if (!current) return null;
+    const unit = $('#production-unit').value || current.unit;
+    const output = convertQuantity(Math.max(0, Number($('#production-amount').value) || 0), unit, current.unit);
+    const scale = Number(current.yieldQty) > 0 ? output / Number(current.yieldQty) : 0;
+    const requirements = (current.components || []).map(component => {
+      const pure = itemById(component.ingredientId);
+      const required = pure && !isPremixItem(pure) ? convertQuantity(component.qty, component.unit, pure.unit) * scale : 0;
+      return { pure, required, enough: pure ? required <= Number(pure.stock) + 0.000001 : false };
+    });
+    const cost = requirements.reduce((sum, row) => sum + (row.pure ? row.required * inventoryUnitCost(row.pure) : 0), 0);
+    return { premix: current, unit, output, requirements, cost };
+  };
+  const render = () => {
+    const data = calculate(); if (!data) return;
+    const { premix: current, requirements, output, cost } = data;
+    const rows = requirements.map(({ pure, required, enough }) => `<div class="production-row ${enough ? '' : 'short'}"><span>${pure ? escapeHTML(pure.name) : 'Bahan dihapus'}</span><span>${pure ? formatQuantity(required, pure.unit) : '—'}</span><span>${pure ? formatQuantity(pure.stock, pure.unit) : '—'}</span></div>`).join('');
+    const short = requirements.some(row => row.pure && !row.enough);
+    $('#production-preview').innerHTML = `<div class="production-list"><div class="production-row head"><span>Bahan murni</span><span>Dibutuhkan</span><span>Stok</span></div>${rows || '<div class="production-empty">Komposisi premix belum diisi.</div>'}</div><div class="production-summary"><span>Hasil<strong>${formatQuantity(output, current.unit)}</strong></span><span>Biaya batch<strong>${rupiah(cost)}</strong></span><span>Stok premix setelah<strong>${formatQuantity(Number(current.stock) + output, current.unit)}</strong></span></div>${short ? '<div class="notice danger-notice">Stok bahan murni belum cukup untuk jumlah produksi ini.</div>' : ''}`;
+  };
+  $('#production-premix').addEventListener('change', event => { const current = itemById(event.target.value); if (current) { syncUnits(current); $('#production-amount').value = Number(current.yieldQty) || 1; } render(); });
+  $('#production-amount').addEventListener('input', render);
+  $('#production-unit').addEventListener('change', render);
+  syncUnits(initial); render();
+  $('#premix-production-form').addEventListener('submit', event => {
+    event.preventDefault(); const data = new FormData(event.currentTarget); const current = itemById(data.get('premix')); if (!current) return;
+    const unit = data.get('unit') || current.unit; const output = convertQuantity(Math.max(0, Number(data.get('amount')) || 0), unit, current.unit);
+    if (output <= 0) return toast('Jumlah produksi harus lebih dari 0', '!');
+    const scale = Number(current.yieldQty) > 0 ? output / Number(current.yieldQty) : 0;
+    if (!scale) return toast('Hasil per batch premix belum diatur', '!');
+    const requirements = (current.components || []).map(component => { const pure = itemById(component.ingredientId); return pure && !isPremixItem(pure) ? { pure, required: convertQuantity(component.qty, component.unit, pure.unit) * scale } : null; }).filter(Boolean);
+    if (!requirements.length) return toast('Komposisi premix belum diisi', '!');
+    const short = requirements.filter(row => row.required > Number(row.pure.stock) + 0.000001);
+    if (short.length) return toast(`Stok bahan murni tidak cukup: ${short.map(row => row.pure.name).join(', ')}`, '!');
+    const productionId = crypto.randomUUID(); const createdAt = Date.now(); const reference = String(data.get('ref') || '').trim() || `Produksi ${current.name}`;
+    requirements.forEach(({ pure, required }) => {
+      const before = Number(pure.stock) || 0; pure.stock = Number((before - required).toFixed(3));
+      state.inventoryMovements.unshift({ id: crypto.randomUUID(), ingredientId: pure.id, mode: 'subtract', amount: Number(required.toFixed(3)), before, after: pure.stock, reference: `Produksi ${current.name}`, productionId, createdAt, userId: currentUser?.id || null });
+    });
+    const before = Number(current.stock) || 0; current.stock = Number((before + output).toFixed(3));
+    state.inventoryMovements.unshift({ id: crypto.randomUUID(), ingredientId: current.id, mode: 'production', amount: Number(output.toFixed(3)), before, after: current.stock, reference, productionId, purchaseCost: 0, createdAt, userId: currentUser?.id || null });
+    save(); closeModal(); renderInventory($('#inventory-search').value); renderReports(); toast(`Produksi ${current.name} ${formatQuantity(output, current.unit)} selesai`, '▣');
   });
 }
 
@@ -1762,28 +2040,48 @@ function showHppManager() {
     const recipe = recipeForProduct(product.id); const hpp = recipeHpp(recipe); const price = productPrice(product); const foodCost = price ? hpp / price * 100 : 0;
     return `<article class="hpp-card ${recipe ? '' : 'missing'}"><div><span class="hpp-status">${recipe ? `${recipe.components.length} KOMPONEN` : 'BELUM ADA RESEP'}</span><h3>${escapeHTML(product.name)}</h3><p>${recipe ? `HPP ${rupiah(hpp)} · ${foodCost.toFixed(1)}% dari harga jual` : 'Penjualan produk ini belum mengurangi stok otomatis.'}</p></div><div class="hpp-card-value"><strong>${rupiah(price)}</strong><small>Harga POS</small><button data-recipe-edit="${product.id}">${recipe ? 'Edit resep' : 'Buat resep'}</button></div></article>`;
   }).join('');
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Resep & HPP</h2><p>Sumber awal hpp.xlsx · harga dan pemakaian dapat disunting</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="hpp-list">${cards || '<div class="empty-inline"><strong>Belum ada menu minuman</strong></div>'}</div><div class="notice">Stok hanya berkurang untuk komponen yang terhubung dengan item inventori. Biaya pekerja dan es tetap masuk HPP tanpa mengurangi stok.</div></div><div class="modal-footer"><button class="button-primary modal-close">Selesai</button></div>`, true);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Resep & HPP</h2><p>Resep memakai bahan premix; bahan murni tanpa premix tetap bisa dipilih langsung</p></div><button class="modal-close">×</button></div><div class="modal-body"><div class="hpp-list">${cards || '<div class="empty-inline"><strong>Belum ada menu minuman</strong></div>'}</div><div class="notice">Stok berkurang sesuai komponen resep: premix untuk bahan yang diracik, bahan murni untuk yang tidak dipremix. Biaya pekerja dan es tetap masuk HPP tanpa mengurangi stok.</div></div><div class="modal-footer"><button class="button-primary modal-close">Selesai</button></div>`, true);
   $$('[data-recipe-edit]', $('#modal')).forEach(button => button.addEventListener('click', () => showRecipeEditor(button.dataset.recipeEdit)));
 }
 
 function recipeComponentRow(component = {}) {
-  const ingredientOptions = state.inventory.map(item => `<option value="${item.id}" ${component.ingredientId && String(component.ingredientId) === String(item.id) ? 'selected' : ''} data-name="${escapeHTML(item.name)}" data-unit="${escapeHTML(item.unit)}">${escapeHTML(item.name)} · ${escapeHTML(item.unit)}</option>`).join('');
-  return `<div class="recipe-component-row" data-recipe-component="${component.id || crypto.randomUUID()}" data-cost-type="${escapeHTML(component.costType || '')}"><label><span>Item stok</span><select data-component-ingredient><option value="">Biaya non-stok</option>${ingredientOptions}</select></label><label><span>Nama komponen</span><input data-component-name required value="${escapeHTML(component.name || '')}" placeholder="Nama bahan / biaya"></label><label><span>Pemakaian</span><input data-component-qty type="number" min="0.001" step="0.001" required value="${component.qty ?? ''}"></label><label><span>Satuan</span><input data-component-unit required maxlength="12" value="${escapeHTML(component.unit || '')}" placeholder="ml / gram"></label><label><span>Harga beli</span><input data-component-price type="number" min="0" step="0.01" required value="${component.costPrice ?? ''}"></label><label><span>Isi kemasan</span><input data-component-size type="number" min="0.001" step="0.001" required value="${component.packageSize ?? ''}"></label><button type="button" class="recipe-remove" title="Hapus komponen">×</button></div>`;
+  const option = item => `<option value="${item.id}" ${component.ingredientId && String(component.ingredientId) === String(item.id) ? 'selected' : ''} data-name="${escapeHTML(item.name)}" data-unit="${escapeHTML(item.unit)}" data-kind="${isPremixItem(item) ? 'premix' : 'pure'}">${escapeHTML(item.name)} · ${escapeHTML(canonicalUnit(item.unit))}</option>`;
+  const premixOptions = state.inventory.filter(isPremixItem).map(option).join('');
+  const pureOptions = state.inventory.filter(item => !isPremixItem(item)).map(option).join('');
+  const groups = `${premixOptions ? `<optgroup label="Bahan premix">${premixOptions}</optgroup>` : ''}${pureOptions ? `<optgroup label="Bahan murni">${pureOptions}</optgroup>` : ''}`;
+  return `<div class="recipe-component-row" data-recipe-component="${component.id || crypto.randomUUID()}" data-cost-type="${escapeHTML(component.costType || '')}"><label><span>Item stok</span><select data-component-ingredient><option value="">Biaya non-stok</option>${groups}</select></label><label><span>Nama komponen</span><input data-component-name required value="${escapeHTML(component.name || '')}" placeholder="Nama bahan / biaya"></label><label><span>Pemakaian</span><input data-component-qty type="number" min="0.001" step="0.001" required value="${component.qty ?? ''}"></label><label><span>Satuan</span><input data-component-unit required maxlength="12" value="${escapeHTML(component.unit || '')}" placeholder="ml / gram"></label><label><span>Harga acuan</span><input data-component-price type="number" min="0" step="0.01" required value="${component.costPrice ?? ''}"></label><label><span>Isi acuan</span><input data-component-size type="number" min="0.001" step="0.001" required value="${component.packageSize ?? ''}"></label><button type="button" class="recipe-remove" title="Hapus komponen">×</button></div>`;
 }
 
 function showRecipeEditor(productId) {
   const product = products.find(item => String(item.id) === String(productId)); if (!product) return;
   const recipe = recipeForProduct(product.id); const components = recipe?.components || [];
-  openModal(`<div class="modal-header"><div><h2 id="modal-title">Resep ${escapeHTML(product.name)}</h2><p>Edit harga bahan dan pemakaian per gelas</p></div><button class="modal-close">×</button></div><form id="recipe-form"><div class="modal-body"><div class="recipe-columns"><span>ITEM STOK</span><span>NAMA</span><span>QTY</span><span>UNIT</span><span>HARGA</span><span>ISI</span><span></span></div><div id="recipe-components">${components.map(recipeComponentRow).join('')}</div><button type="button" class="add-recipe-row" id="add-recipe-component">＋ Tambah komponen</button><div class="hpp-live-summary"><span>HPP per gelas<strong id="recipe-hpp-live">Rp0</strong></span><span>Harga jual POS<strong>${rupiah(productPrice(product))}</strong></span><span>Margin kotor<strong id="recipe-margin-live">Rp0</strong></span></div><div class="notice">Harga beli dan isi kemasan mengikuti angka per baris pada workbook. Contoh: Rp50.000 / 1.000 ml. Pemakaian adalah jumlah yang berkurang setiap satu gelas terjual.</div></div><div class="modal-footer">${recipe ? '<button type="button" class="button-ghost danger-button" id="delete-recipe">Hapus resep</button>' : '<button type="button" class="button-ghost" id="back-hpp">Kembali</button>'}<button type="submit" class="button-primary">Simpan resep</button></div></form>`, true);
+  openModal(`<div class="modal-header"><div><h2 id="modal-title">Resep ${escapeHTML(product.name)}</h2><p>Pilih bahan premix atau murni, lalu atur pemakaian per gelas</p></div><button class="modal-close">×</button></div><form id="recipe-form"><div class="modal-body"><div class="recipe-columns"><span>ITEM STOK</span><span>NAMA</span><span>QTY</span><span>UNIT</span><span>HARGA ACUAN</span><span>ISI ACUAN</span><span></span></div><div id="recipe-components">${components.map(recipeComponentRow).join('')}</div><button type="button" class="add-recipe-row" id="add-recipe-component">＋ Tambah komponen</button><div class="hpp-live-summary"><span>HPP per gelas<strong id="recipe-hpp-live">Rp0</strong></span><span>Harga jual POS<strong>${rupiah(productPrice(product))}</strong></span><span>Margin kotor<strong id="recipe-margin-live">Rp0</strong></span></div><div class="notice">Pilih <strong>Bahan premix</strong> untuk bahan yang diracik, atau <strong>Bahan murni</strong> untuk bahan yang tidak dipremix (kemasan, sirup, es). Harga acuan terisi otomatis dari inventori; isi manual hanya untuk biaya non-stok seperti pekerja.</div></div><div class="modal-footer">${recipe ? '<button type="button" class="button-ghost danger-button" id="delete-recipe">Hapus resep</button>' : '<button type="button" class="button-ghost" id="back-hpp">Kembali</button>'}<button type="submit" class="button-primary">Simpan resep</button></div></form>`, true);
   const calculateLive = () => {
-    const hpp = $$('[data-recipe-component]', $('#modal')).reduce((sum, row) => sum + (Number($('[data-component-price]', row).value) || 0) / Math.max(Number($('[data-component-size]', row).value) || 0, .0001) * (Number($('[data-component-qty]', row).value) || 0), 0);
+    const rowHpp = row => {
+      const item = itemById($('[data-component-ingredient]', row).value);
+      const qty = Number($('[data-component-qty]', row).value) || 0;
+      const unit = $('[data-component-unit]', row).value;
+      if (item) { const unitCost = inventoryUnitCost(item); if (unitCost > 0) return convertQuantity(qty, unit, item.unit) * unitCost; }
+      return (Number($('[data-component-price]', row).value) || 0) / Math.max(Number($('[data-component-size]', row).value) || 0, .0001) * qty;
+    };
+    const hpp = $$('[data-recipe-component]', $('#modal')).reduce((sum, row) => sum + rowHpp(row), 0);
     $('#recipe-hpp-live').textContent = rupiah(hpp); $('#recipe-margin-live').textContent = rupiah(productPrice(product) - hpp);
   };
   $('#recipe-components').addEventListener('input', calculateLive);
   $('#recipe-components').addEventListener('change', event => {
     if (event.target.matches('[data-component-ingredient]')) {
       const row = event.target.closest('[data-recipe-component]'); const option = event.target.selectedOptions[0];
-      if (event.target.value) { $('[data-component-name]', row).value = option.dataset.name; const stockUnit = option.dataset.unit.toLowerCase(); $('[data-component-unit]', row).value = stockUnit === 'l' ? 'ml' : stockUnit === 'kg' ? 'gram' : stockUnit === 'pcs' ? 'cup' : stockUnit; }
+      if (event.target.value) {
+        const item = itemById(event.target.value);
+        $('[data-component-name]', row).value = option.dataset.name;
+        const stockUnit = option.dataset.unit.toLowerCase(); $('[data-component-unit]', row).value = stockUnit === 'l' ? 'ml' : stockUnit === 'kg' ? 'gram' : stockUnit === 'pcs' ? 'cup' : stockUnit;
+        if (item) {
+          const previewUnit = $('[data-component-unit]', row).value;
+          const size = Number(convertQuantity(Number(item.packageSize) || 0, item.unit, previewUnit).toFixed(4));
+          $('[data-component-price]', row).value = Number(item.costPrice) || 0;
+          $('[data-component-size]', row).value = size > 0 ? size : 1;
+        }
+      }
     }
     calculateLive();
   });
@@ -1826,6 +2124,8 @@ document.addEventListener('click', async e => {
   const order = e.target.closest('[data-order]'); if (order) updateOrder(order.dataset.order, order.dataset.status);
   const stockAdjust = e.target.closest('[data-stock-adjust]'); if (stockAdjust) showStockForm(state.inventory.find(i => String(i.id) === stockAdjust.dataset.stockAdjust));
   const inventoryEdit = e.target.closest('[data-inventory-edit]'); if (inventoryEdit) showInventoryItemForm(state.inventory.find(i => String(i.id) === inventoryEdit.dataset.inventoryEdit));
+  const premixEdit = e.target.closest('[data-premix-edit]'); if (premixEdit) showPremixForm(state.inventory.find(i => String(i.id) === premixEdit.dataset.premixEdit));
+  const premixProduce = e.target.closest('[data-premix-produce]'); if (premixProduce) showPremixProduction(state.inventory.find(i => String(i.id) === premixProduce.dataset.premixProduce));
   const historyDetail = e.target.closest('[data-history-detail]'); if (historyDetail) showTransactionDetail(state.orders.find(order => orderRef(order) === historyDetail.dataset.historyDetail));
   const historyPrint = e.target.closest('[data-history-print]'); if (historyPrint) printReceipt(state.orders.find(order => orderRef(order) === historyPrint.dataset.historyPrint));
   const transactionDelete = e.target.closest('[data-transaction-delete]'); if (transactionDelete) showDeleteTransaction(state.orders.find(order => orderRef(order) === transactionDelete.dataset.transactionDelete));
@@ -1899,6 +2199,8 @@ $('#account-add').addEventListener('click', showAccountForm);
 $('#hpp-manage').addEventListener('click', showHppManager);
 $('#stock-add').addEventListener('click', ()=>showStockForm());
 $('#stock-opname').addEventListener('click', ()=>showInventoryItemForm());
+$('#premix-add').addEventListener('click', ()=>showPremixForm());
+$('#premix-produce').addEventListener('click', ()=>showPremixProduction());
 $('#export-report').addEventListener('click', exportCSV);
 $('#attendance-manage').addEventListener('click', showAttendanceManager);
 $('#attendance-manage-view').addEventListener('click', showAttendanceManager);
@@ -1968,6 +2270,7 @@ function hydrateRemoteState(result) {
   state.inventoryMovements ||= [];
   state.customers ||= customers;
   state.recipes ||= [];
+  if (state.hppVersion < 3) migratePremixModel();
   state.shifts ||= [];
   state.attendance ||= [];
   state.payrollPayments ||= [];
