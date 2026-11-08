@@ -208,6 +208,10 @@ td small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .muted-cell { color: var(--muted); font-size: 8px; }
 .inventory-sections { display: grid; gap: 14px; }
 .inventory-sections .card-header { flex-wrap: wrap; }
+.sync-status { align-self: center; padding: 6px 9px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); font-size: 8px; font-weight: 800; white-space: nowrap; }
+.sync-status[data-state="saved"] { border-color: var(--green); color: var(--green); background: var(--green-soft); }
+.sync-status[data-state="saving"], .sync-status[data-state="waiting"] { border-color: #d6992d; color: #9a6b10; background: var(--yellow-soft); }
+.sync-status[data-state="error"], .sync-status[data-state="local"] { border-color: var(--danger); color: var(--danger); background: #f8e5e3; }
 .premix-count { padding: 5px 9px; border: 1px solid var(--ink); background: var(--yellow-soft); font-size: 8px; font-weight: 800; letter-spacing: .04em; }
 .premix-icon { background: var(--yellow-soft); color: #9a6b10; }
 .premix-composition { max-width: 260px; color: var(--ink); font-size: 9px; line-height: 1.5; }

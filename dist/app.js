@@ -177,6 +177,7 @@ const save = () => {
   writeLocalState();
   if (syncReady && !applyingRemote) {
     if (stateFingerprint() !== lastSyncedFingerprint) markLocalDirty();
+    updateSyncStatus('saving');
     cloud.save(state, syncUsers());
   }
 };
@@ -322,10 +323,14 @@ async function completeCloudLogin(profile) {
       // ulang, jangan menimpa dengan snapshot remote yang lebih lama.
       cloud.save(state, syncUsers());
     } else {
-      hydrateRemoteState(result);
-      cloud.markSynced(state, syncUsers());
-      lastSyncedFingerprint = stateFingerprint();
-      clearLocalDirty();
+      const migrated = hydrateRemoteState(result);
+      if (migrated) {
+        cloud.save(state, syncUsers());
+      } else {
+        cloud.markSynced(state, syncUsers());
+        lastSyncedFingerprint = stateFingerprint();
+        clearLocalDirty();
+      }
     }
     lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : 0;
   }
@@ -358,9 +363,11 @@ function unlockApp(user) {
   $('#auth-gate').hidden = true;
   applyPermissions(); renderAll(); switchView(user.role === 'barista' ? 'kds' : 'pos');
   startCloudSync();
+  updateSyncStatus(localDirty ? 'saving' : 'saved');
 }
 
 async function logout() {
+  if (cloud.hasPending()) { try { await cloud.flush(); } catch (error) { /* data tetap lokal */ } }
   syncReady = false;
   pendingRemote = null;
   if (authBackendReady) await cloud.signOut();
@@ -506,7 +513,7 @@ function convertQuantity(value, fromUnit, toUnit) {
 // diracik dari bahan murni dan dipakai oleh resep/HPP.
 if (state.hppVersion < 3) {
   const migrated = migratePremixModel();
-  if (migrated) save();
+  if (migrated) { markLocalDirty(); save(); }
 }
 function formatQuantity(value, unit) {
   let amount = Number(value); if (!Number.isFinite(amount)) amount = 0;
@@ -2270,7 +2277,8 @@ function hydrateRemoteState(result) {
   state.inventoryMovements ||= [];
   state.customers ||= customers;
   state.recipes ||= [];
-  if (state.hppVersion < 3) migratePremixModel();
+  const migrated = state.hppVersion < 3;
+  if (migrated) migratePremixModel();
   state.shifts ||= [];
   state.attendance ||= [];
   state.payrollPayments ||= [];
@@ -2278,11 +2286,14 @@ function hydrateRemoteState(result) {
   state.shiftLocation = { enabled: false, label: '', latitude: null, longitude: null, radius: 50, ...(state.shiftLocation || {}) };
   state.payrollSettings = { monthlyBase: 500000, monthlyOffDays: 4, cupBonus: 1000, mode: 'auto', workStart: '09:00', workEnd: '16:00', ...(state.payrollSettings || {}) };
   writeLocalState();
-  clearLocalDirty();
+  // Hasil migrasi adalah perubahan data nyata: jangan tandai sudah sinkron
+  // sebelum snapshot barunya benar-benar terunggah ke Supabase.
+  if (migrated) markLocalDirty(); else clearLocalDirty();
+  return migrated;
 }
 
 function applyRemoteResult(result) {
-  hydrateRemoteState(result);
+  const migrated = hydrateRemoteState(result);
   if (currentUser) {
     const refreshed = authUsers.find(user => user.id === currentUser.id && user.status === 'active');
     if (!refreshed) { logout(); return; }
@@ -2294,8 +2305,12 @@ function applyRemoteResult(result) {
   } finally {
     applyingRemote = false;
   }
-  cloud.markSynced(state, syncUsers());
-  lastSyncedFingerprint = stateFingerprint();
+  if (migrated) {
+    cloud.save(state, syncUsers());
+  } else {
+    cloud.markSynced(state, syncUsers());
+    lastSyncedFingerprint = stateFingerprint();
+  }
   pendingRemote = null;
   remoteToastShown = false;
   lastRemoteAt = result.updatedAt ? Date.parse(result.updatedAt) : Date.now();
@@ -2305,8 +2320,12 @@ function applyRemoteResult(result) {
 function maybeApplyRemote(result) {
   if (!cloud.enabled || !syncReady || !result || !result.ok || !result.state) return;
   if (localDirty) return;
+  const remoteAt = result.updatedAt ? Date.parse(result.updatedAt) : 0;
+  // Abaikan snapshot yang lebih lama dari data yang sudah kita pegang agar
+  // respons polling/realtime yang terlambat tidak mengembalikan data lama.
+  if (remoteAt && lastRemoteAt && remoteAt < lastRemoteAt - 1000) return;
   if (cloud.fingerprint(result.state, syncUsers()) === lastSyncedFingerprint) {
-    lastRemoteAt = Math.max(lastRemoteAt, result.updatedAt ? Date.parse(result.updatedAt) : Date.now());
+    lastRemoteAt = Math.max(lastRemoteAt, remoteAt || Date.now());
     return;
   }
   if (hasBlockingOverlay()) {
@@ -2377,6 +2396,19 @@ async function pullRemote() {
   }
 }
 
+function updateSyncStatus(mode, at = Date.now()) {
+  const el = $('#sync-status');
+  if (!el) return;
+  if (!cloud.enabled) { el.hidden = true; return; }
+  el.hidden = false;
+  if (!authBackendReady) { el.dataset.state = 'local'; el.textContent = 'Mode lokal · data belum ke database'; return; }
+  if (!syncReady) { el.dataset.state = 'waiting'; el.textContent = 'Menunggu login…'; return; }
+  if (mode === 'saving') { el.dataset.state = 'saving'; el.textContent = 'Menyimpan ke database…'; return; }
+  if (mode === 'error') { el.dataset.state = 'error'; el.textContent = 'Gagal menyimpan · data aman di perangkat'; return; }
+  el.dataset.state = 'saved';
+  el.textContent = `Tersimpan ke database · ${new Intl.DateTimeFormat('id-ID', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }).format(new Date(at))}`;
+}
+
 function startCloudSync() {
   if (!cloud.enabled || cloudSyncStarted) return;
   cloudSyncStarted = true;
@@ -2384,10 +2416,12 @@ function startCloudSync() {
     if (event.detail && event.detail.fingerprint) lastSyncedFingerprint = event.detail.fingerprint;
     lastRemoteAt = Math.max(lastRemoteAt, Date.now());
     if (!event.detail || !event.detail.fingerprint || event.detail.fingerprint === stateFingerprint()) clearLocalDirty();
+    updateSyncStatus('saved', event.detail?.at || Date.now());
   });
-  window.addEventListener('pos:cloud-error', () => { markLocalDirty(); if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
+  window.addEventListener('pos:cloud-error', () => { markLocalDirty(); updateSyncStatus('error'); if (state.networkOnline) toast('Gagal menyimpan ke Supabase. Data tetap tersimpan lokal.', '!'); });
   window.addEventListener('online', pullRemote);
   window.addEventListener('focus', pullRemote);
+  window.addEventListener('pagehide', () => { if (cloud.hasPending()) cloud.flush(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pullRemote(); });
   setInterval(pullRemote, 20000);
   cloud.subscribe(row => maybeApplyRemote({ ok: true, state: row.state, updatedAt: row.updated_at }));
