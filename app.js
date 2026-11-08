@@ -167,6 +167,7 @@ let syncReady = false;
 let cloudSyncStarted = false;
 let lastRemoteAt = cloudResult.updatedAt ? Date.parse(cloudResult.updatedAt) : 0;
 let lastSyncedFingerprint = '';
+let attendanceAdminDate = '';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -1459,35 +1460,47 @@ function showAttendanceManager() {
   if (!canManageSales()) return toast('Hanya sysadmin atau admin yang dapat mengelola kehadiran', '!');
   const data = reportData(); const users = authUsers.filter(user => user.status !== 'inactive');
   if (!users.length) return toast('Buat akun karyawan terlebih dahulu', '!');
+  const anyDate = isSysadmin();
+  if (anyDate && !attendanceAdminDate) attendanceAdminDate = jakartaDateKey();
+  const selectedDate = anyDate ? attendanceAdminDate : data.to;
+  const dateMin = anyDate ? '2000-01-01' : data.from;
+  const dateMax = anyDate ? '' : ` max="${data.to}"`;
   const payrollRows = reportPayroll(data.dateKeys).filter(row => row.id);
-  const entries = state.attendance.filter(entry => entry.date >= data.from && entry.date <= data.to).sort((a, b) => b.date.localeCompare(a.date));
+  const entries = state.attendance.filter(entry => anyDate ? entry.date === selectedDate : (entry.date >= data.from && entry.date <= data.to)).sort((a, b) => b.date.localeCompare(a.date));
   const workStart = state.payrollSettings.workStart || '09:00'; const workEnd = state.payrollSettings.workEnd || '16:00';
   const summaryRows = users.map(user => {
     const row = payrollRows.find(item => item.id === user.id) || { workDays: 0, cups: 0 };
-    return `<tr><td><strong>${escapeHTML(user.name)}</strong><small>${escapeHTML(ROLE_LABELS[user.role] || user.role)}</small></td><td><strong>${row.workDays}</strong> hari</td><td>${row.cups} cup</td><td><input type="date" data-workday-date="${user.id}" min="${data.from}" max="${data.to}" value="${data.to}"></td><td><button type="button" class="purchase-edit" data-add-workday="${user.id}">＋ Tambah hari</button></td></tr>`;
+    return `<tr><td><strong>${escapeHTML(user.name)}</strong><small>${escapeHTML(ROLE_LABELS[user.role] || user.role)}</small></td><td><strong>${row.workDays}</strong> hari</td><td>${row.cups} cup</td><td><input type="date" data-workday-date="${user.id}" min="${dateMin}"${dateMax} value="${data.to}"></td><td><button type="button" class="purchase-edit" data-add-workday="${user.id}">＋ Tambah hari</button></td></tr>`;
   }).join('');
   const rows = entries.length ? entries.map(entry => { const user = authUsers.find(item => item.id === entry.userId); const [label, tone] = attendanceStatusInfo(entry.status); const time = entry.checkInAt ? ` · ${attendanceTimeLabel(entry.checkInAt)}` : ''; return `<tr><td>${entry.date}</td><td><strong>${escapeHTML(user?.name || 'Akun dihapus')}</strong></td><td><span class="payroll-status ${tone}">${label}</span>${time}</td><td>${escapeHTML(entry.note || '—')}</td><td><button type="button" class="purchase-edit" data-attendance-delete="${entry.id}">Hapus</button></td></tr>`; }).join('') : '<tr><td colspan="5"><div class="empty-table"><strong>Belum ada koreksi manual</strong><span>Kehadiran kasir tetap otomatis berasal dari shift dan transaksi.</span></div></td></tr>';
   openModal(`<div class="modal-header"><div><h2 id="modal-title">Hari kerja karyawan</h2><p>${data.from} s.d. ${data.to} · satu hari kerja ${workStart}–${workEnd} WIB</p></div><button class="modal-close">×</button></div><form id="attendance-form"><div class="modal-body">
-    <div class="notice">Tambahkan hari kerja untuk karyawan yang tidak tercatat otomatis oleh shift atau transaksi. Satu hari kerja dihitung penuh untuk jam ${workStart}–${workEnd} WIB. Koreksi manual mengalahkan data otomatis pada tanggal yang sama.</div>
+    <div class="notice">Tambahkan hari kerja untuk karyawan yang tidak tercatat otomatis oleh shift atau transaksi. Satu hari kerja dihitung penuh untuk jam ${workStart}–${workEnd} WIB. Koreksi manual mengalahkan data otomatis pada tanggal yang sama.${anyDate ? ' Sysadmin dapat memilih tanggal mana pun untuk koreksi kehadiran.' : ''}</div>
     <h3 class="shift-history-title">Tambah hari kerja per karyawan</h3>
     <div class="table-wrap modal-record-table"><table><thead><tr><th>Karyawan</th><th>Hari kerja</th><th>Cup</th><th>Tanggal</th><th></th></tr></thead><tbody>${summaryRows}</tbody></table></div>
-    <h3 class="shift-history-title">Koreksi kehadiran</h3>
-    <div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${data.from}" max="${data.to}" value="${data.to}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="leave">Izin</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div>
+    <h3 class="shift-history-title">Koreksi kehadiran${anyDate ? ` · ${selectedDate}` : ''}</h3>
+    ${anyDate ? `<div class="form-grid"><div class="field"><label>Tanggal koreksi</label><input id="attendance-admin-date" type="date" value="${selectedDate}"><small>Pilih tanggal kapan pun, termasuk di luar periode laporan.</small></div></div>` : ''}
+    <div class="form-grid"><div class="field"><label>Karyawan</label><select name="userId" required>${users.map(user => `<option value="${user.id}">${escapeHTML(user.name)} · ${escapeHTML(ROLE_LABELS[user.role])}</option>`).join('')}</select></div><div class="field"><label>Tanggal</label><input name="date" type="date" min="${dateMin}"${dateMax} value="${selectedDate}" required></div><div class="field"><label>Status</label><select name="status"><option value="present">Hadir</option><option value="leave">Izin</option><option value="off">Libur</option><option value="absent">Tidak hadir</option></select></div><div class="field"><label>Catatan</label><input name="note" maxlength="80" placeholder="Opsional"></div></div>
     <div class="table-wrap modal-record-table"><table><thead><tr><th>Tanggal</th><th>Karyawan</th><th>Status</th><th>Catatan</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
   </div><div class="modal-footer"><button type="button" class="button-ghost modal-close">Kembali</button><button type="submit" class="button-primary">Simpan kehadiran</button></div></form>`, true);
+  $('#attendance-admin-date', $('#modal'))?.addEventListener('change', event => {
+    attendanceAdminDate = event.target.value || jakartaDateKey();
+    showAttendanceManager();
+  });
   $$('[data-add-workday]', $('#modal')).forEach(button => button.addEventListener('click', () => {
     const userId = button.dataset.addWorkday;
     const input = $(`[data-workday-date="${userId}"]`, $('#modal'));
     const date = input?.value || data.to;
-    if (!date || date < data.from || date > data.to) return toast('Pilih tanggal di dalam periode laporan', '!');
+    if (!date) return toast('Pilih tanggal terlebih dahulu', '!');
+    if (!anyDate && (date < data.from || date > data.to)) return toast('Pilih tanggal di dalam periode laporan', '!');
     const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date);
     const row = payrollRows.find(item => item.id === userId);
     if (!existing && row?.days?.has(date)) return toast('Tanggal ini sudah tercatat sebagai hari kerja', '!');
     const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status: 'present', note: existing?.note || `Ditambahkan ${currentUser.name}`, updatedAt: Date.now(), updatedBy: currentUser.id };
     if (existing) Object.assign(existing, entry); else state.attendance.push(entry);
+    if (anyDate) attendanceAdminDate = date;
     save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Hari kerja ditambahkan', '◷');
   }));
-  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const status = form.get('status'); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status, note: form.get('note').trim(), source: 'admin', updatedAt: Date.now(), updatedBy: currentUser.id }; if (status !== 'present') { entry.checkInAt = null; entry.location = null; } if (existing) Object.assign(existing, entry); else state.attendance.push(entry); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
+  $('#attendance-form').addEventListener('submit', event => { event.preventDefault(); const form = new FormData(event.currentTarget); const userId = form.get('userId'); const date = form.get('date'); const existing = state.attendance.find(entry => entry.userId === userId && entry.date === date); const status = form.get('status'); const entry = { id: existing?.id || crypto.randomUUID(), userId, date, status, note: form.get('note').trim(), source: 'admin', updatedAt: Date.now(), updatedBy: currentUser.id }; if (status !== 'present') { entry.checkInAt = null; entry.location = null; } if (existing) Object.assign(existing, entry); else state.attendance.push(entry); if (anyDate) attendanceAdminDate = date; save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager(); toast('Kehadiran berhasil disimpan', '◷'); });
   $$('[data-attendance-delete]', $('#modal')).forEach(button => button.addEventListener('click', async () => {
     if (!await confirmDialog('Hapus data kehadiran ini?', { title: 'Hapus kehadiran', confirmLabel: 'Hapus' })) return;
     state.attendance = state.attendance.filter(entry => entry.id !== button.dataset.attendanceDelete); save(); closeModal(); renderReports(); renderAttendance(); showAttendanceManager();
