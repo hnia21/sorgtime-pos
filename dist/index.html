@@ -124,13 +124,19 @@
 
       <section class="view" id="view-inventory">
         <div class="section-toolbar">
-          <div><span class="hand-label">BAHAN LOKAL</span><h2>Inventori bahan</h2><p>Stok berkurang otomatis berdasarkan resep</p></div>
-          <div class="toolbar-group"><button class="secondary-button" id="hpp-manage">Resep & HPP</button><button class="secondary-button" id="stock-opname">＋ Tambah item</button><button class="primary-small" id="stock-add">± Penyesuaian stok</button></div>
+          <div><span class="hand-label">BAHAN LOKAL</span><h2>Inventori bahan</h2><p>Bahan baku murni dan premix, stok berkurang otomatis dari resep</p></div>
+          <div class="toolbar-group"><button class="secondary-button" id="hpp-manage">Resep & HPP</button><button class="secondary-button" id="premix-produce">▣ Produksi premix</button><button class="secondary-button" id="premix-add">＋ Premix</button><button class="secondary-button" id="stock-opname">＋ Bahan murni</button><button class="primary-small" id="stock-add">± Penyesuaian stok</button></div>
         </div>
         <div class="metric-grid" id="inventory-metrics"></div>
-        <div class="content-card">
-          <div class="card-header"><div><h3>Persediaan saat ini</h3><p>Diperbarui dari transaksi dan pergerakan stok</p></div><label class="small-search">⌕ <input id="inventory-search" placeholder="Cari bahan..."></label></div>
-          <div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Kategori</th><th>Stok tersedia</th><th>Harga acuan HPP</th><th>Minimum</th><th>Status</th><th></th></tr></thead><tbody id="inventory-table"></tbody></table></div>
+        <div class="inventory-sections">
+          <div class="content-card">
+            <div class="card-header"><div><h3>Bahan baku murni</h3><p>Persediaan bahan dasar sebelum diracik menjadi premix</p></div><label class="small-search">⌕ <input id="inventory-search" placeholder="Cari bahan..."></label></div>
+            <div class="table-wrap"><table><thead><tr><th>Bahan</th><th>Kategori</th><th>Stok tersedia</th><th>Harga acuan</th><th>Minimum</th><th>Status</th><th></th></tr></thead><tbody id="inventory-pure-table"></tbody></table></div>
+          </div>
+          <div class="content-card">
+            <div class="card-header"><div><h3>Bahan baku premix</h3><p>Diracik dari bahan murni, dipakai resep & HPP</p></div><span class="premix-count" id="premix-count">0 premix</span></div>
+            <div class="table-wrap"><table><thead><tr><th>Premix</th><th>Komposisi per batch</th><th>Stok tersedia</th><th>HPP / satuan</th><th>Minimum</th><th>Status</th><th></th></tr></thead><tbody id="inventory-premix-table"></tbody></table></div>
+          </div>
         </div>
       </section>
 

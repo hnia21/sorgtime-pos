@@ -206,6 +206,39 @@ td small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .stock-preview b { font-size: 18px; }
 .danger-button { color: var(--danger); }
 .muted-cell { color: var(--muted); font-size: 8px; }
+.inventory-sections { display: grid; gap: 14px; }
+.inventory-sections .card-header { flex-wrap: wrap; }
+.premix-count { padding: 5px 9px; border: 1px solid var(--ink); background: var(--yellow-soft); font-size: 8px; font-weight: 800; letter-spacing: .04em; }
+.premix-icon { background: var(--yellow-soft); color: #9a6b10; }
+.premix-composition { max-width: 260px; color: var(--ink); font-size: 9px; line-height: 1.5; }
+.premix-builder { margin-top: 14px; padding: 13px; border: 1px solid var(--ink); background: #faf8f5; }
+.premix-builder-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.premix-builder-head h3 { margin: 0; font-family: Georgia, serif; font-size: 15px; }
+.premix-builder-head p { margin: 3px 0 0; color: var(--muted); font-size: 8px; }
+.premix-builder-head button { border: 1px solid var(--ink); background: var(--paper); padding: 7px 9px; cursor: pointer; font-size: 8px; font-weight: 800; }
+#premix-components { display: grid; gap: 7px; }
+.premix-component-row { display: grid; grid-template-columns: 1.6fr .8fr .8fr 28px; gap: 6px; align-items: end; padding: 8px; border: 1px solid var(--line); background: white; }
+.premix-component-row label { min-width: 0; display: grid; gap: 4px; }
+.premix-component-row label > span { display: none; }
+.premix-component-row input, .premix-component-row select { min-width: 0; width: 100%; height: 35px; border: 1px solid var(--line); background: var(--paper); padding: 0 7px; font-size: 8px; }
+.premix-remove { width: 28px; height: 35px; border: 1px solid var(--ink); background: white; color: var(--danger); cursor: pointer; }
+.premix-cost-preview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 14px; padding: 12px; border: 1px solid var(--ink); background: var(--yellow-soft); text-align: center; }
+.premix-cost-preview span, .premix-cost-preview strong { display: block; }
+.premix-cost-preview span { color: var(--muted); font-size: 8px; }
+.premix-cost-preview strong { margin-top: 4px; color: #7d570d; font-size: 13px; }
+.production-preview { margin-top: 14px; display: grid; gap: 10px; }
+.production-list { border: 1px solid var(--ink); background: white; }
+.production-row { display: grid; grid-template-columns: 1.6fr .8fr .8fr; gap: 8px; padding: 8px 11px; border-top: 1px solid var(--line); font-size: 9px; }
+.production-row:first-child { border-top: 0; }
+.production-row.head { background: #faf8f5; color: var(--muted); font-size: 7px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
+.production-row span:nth-child(2), .production-row span:nth-child(3) { text-align: right; }
+.production-row.short { background: #f8e5e3; color: var(--danger); }
+.production-empty { padding: 13px; color: var(--muted); font-size: 9px; text-align: center; }
+.production-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 12px; border: 1px solid var(--ink); background: var(--green-soft); text-align: center; }
+.production-summary span, .production-summary strong { display: block; }
+.production-summary span { color: var(--muted); font-size: 8px; }
+.production-summary strong { margin-top: 4px; color: var(--green); font-size: 13px; }
+.danger-notice { margin-top: 10px; border-color: var(--danger); background: #f8e5e3; color: var(--danger); }
 .hpp-list { display: grid; gap: 9px; }
 .hpp-card { padding: 13px; border: 1px solid var(--ink); background: white; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 16px; }
 .hpp-card.missing { background: var(--yellow-soft); }
@@ -1022,6 +1055,12 @@ button { border-radius: 0; }
   .recipe-component-row label > span { display: block; }
   .recipe-remove { width: 100%; grid-column: 1 / -1; }
   .hpp-live-summary { grid-template-columns: 1fr; text-align: left; }
+  .premix-component-row { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .premix-component-row label > span { display: block; }
+  .premix-remove { width: 100%; grid-column: 1 / -1; }
+  .premix-cost-preview, .production-summary { grid-template-columns: 1fr; text-align: left; }
+  .premix-builder-head { align-items: flex-start; flex-direction: column; }
+  .premix-builder-head button { width: 100%; }
   .history-filter-card { grid-template-columns: 1fr; }
   .history-search { grid-column: auto; }
   .report-filter-card { grid-template-columns: 1fr; }
